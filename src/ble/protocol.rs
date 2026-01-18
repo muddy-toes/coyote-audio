@@ -1,4 +1,37 @@
 use thiserror::Error;
+use uuid::Uuid;
+
+/// Trait for version-specific Coyote protocol implementations
+pub trait CoyoteProtocol: Send + Sync {
+    /// Service UUID for this protocol version
+    fn service_uuid(&self) -> Uuid;
+
+    /// Write characteristic UUID (primary characteristic)
+    fn write_characteristic_uuid(&self) -> Uuid;
+
+    /// Additional characteristic UUIDs (V2 has multiple, V3 has one)
+    fn additional_characteristic_uuids(&self) -> Vec<Uuid>;
+
+    /// Encode a command for transmission
+    /// Returns bytes to write and which characteristic index to use
+    /// Index 0 = write_characteristic_uuid, 1+ = additional_characteristic_uuids
+    fn encode_command(
+        &mut self,
+        intensity_a: u16,
+        intensity_b: u16,
+        freq_a: u16,
+        freq_b: u16,
+    ) -> Vec<(usize, Vec<u8>)>;
+
+    /// Command interval in milliseconds
+    fn command_interval_ms(&self) -> u64;
+
+    /// Maximum intensity value for this protocol
+    fn max_intensity(&self) -> u16;
+
+    /// Maximum frequency value for this protocol
+    fn max_frequency(&self) -> u16;
+}
 
 #[derive(Error, Debug)]
 pub enum ProtocolError {
@@ -131,6 +164,81 @@ impl Waveform {
             ((combined >> 8) & 0xFF) as u8,
             ((combined >> 16) & 0xFF) as u8,
         ]
+    }
+}
+
+/// Protocol implementation for Coyote V2 devices
+pub struct ProtocolV2 {
+    x_value: u8,
+    z_value: u8,
+}
+
+impl Default for ProtocolV2 {
+    fn default() -> Self {
+        Self {
+            x_value: 10,
+            z_value: 10,
+        }
+    }
+}
+
+impl CoyoteProtocol for ProtocolV2 {
+    fn service_uuid(&self) -> Uuid {
+        Uuid::from_u128(0x955a180b_0fe2_f5aa_a094_84b8d4f3e8ad)
+    }
+
+    fn write_characteristic_uuid(&self) -> Uuid {
+        // PWM_AB2
+        Uuid::from_u128(0x955a1504_0fe2_f5aa_a094_84b8d4f3e8ad)
+    }
+
+    fn additional_characteristic_uuids(&self) -> Vec<Uuid> {
+        vec![
+            Uuid::from_u128(0x955a1505_0fe2_f5aa_a094_84b8d4f3e8ad), // PWM_A34
+            Uuid::from_u128(0x955a1506_0fe2_f5aa_a094_84b8d4f3e8ad), // PWM_B34
+        ]
+    }
+
+    fn encode_command(
+        &mut self,
+        intensity_a: u16,
+        intensity_b: u16,
+        freq_a: u16,
+        freq_b: u16,
+    ) -> Vec<(usize, Vec<u8>)> {
+        let intensity =
+            Intensity::new(intensity_a.min(2047), intensity_b.min(2047)).unwrap_or_default();
+        let waveform_a = self.calculate_waveform(freq_a);
+        let waveform_b = self.calculate_waveform(freq_b);
+
+        vec![
+            (0, intensity.encode().to_vec()),  // PWM_AB2
+            (1, waveform_a.encode().to_vec()), // PWM_A34
+            (2, waveform_b.encode().to_vec()), // PWM_B34
+        ]
+    }
+
+    fn command_interval_ms(&self) -> u64 {
+        100
+    }
+
+    fn max_intensity(&self) -> u16 {
+        2047
+    }
+
+    fn max_frequency(&self) -> u16 {
+        100 // We use 10-100 range
+    }
+}
+
+impl ProtocolV2 {
+    fn calculate_waveform(&self, coyote_freq: u16) -> Waveform {
+        let x = self.x_value.min(31);
+        let y_val = (coyote_freq as i32 - x as i32).max(0);
+        let y = (y_val as u16).min(1023);
+        let z = self.z_value.clamp(5, 31);
+        let params = WaveformParams::new(x, y, z).unwrap_or_default();
+        Waveform::new(params)
     }
 }
 

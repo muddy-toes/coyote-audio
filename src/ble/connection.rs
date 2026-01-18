@@ -7,8 +7,9 @@ use thiserror::Error;
 use tokio::sync::Mutex;
 use tokio::time::interval;
 
-use crate::ble::protocol::{Intensity, Waveform};
-use crate::ble::{CHAR_PWM_A34, CHAR_PWM_AB2, CHAR_PWM_B34, COMMAND_INTERVAL_MS, SERVICE_UUID};
+use super::protocol::{CoyoteProtocol, Intensity, ProtocolV2, Waveform};
+use super::protocol_v3::ProtocolV3;
+use super::scanner::DeviceVersion;
 
 #[derive(Error, Debug)]
 pub enum ConnectionError {
@@ -36,15 +37,11 @@ pub enum ConnectionState {
     Reconnecting,
 }
 
-struct CoyoteCharacteristics {
-    pwm_ab2: Characteristic,
-    pwm_a34: Characteristic,
-    pwm_b34: Characteristic,
-}
-
 pub struct CoyoteConnection {
     peripheral: Peripheral,
-    characteristics: Option<CoyoteCharacteristics>,
+    characteristics: Option<Vec<Characteristic>>,
+    protocol: Box<dyn CoyoteProtocol>,
+    version: DeviceVersion,
     state: Arc<Mutex<ConnectionState>>,
     current_intensity: Arc<Mutex<Intensity>>,
     current_waveform_a: Arc<Mutex<Waveform>>,
@@ -52,15 +49,26 @@ pub struct CoyoteConnection {
 }
 
 impl CoyoteConnection {
-    pub fn new(peripheral: Peripheral) -> Self {
+    pub fn new(peripheral: Peripheral, version: DeviceVersion) -> Self {
+        let protocol: Box<dyn CoyoteProtocol> = match version {
+            DeviceVersion::V2 => Box::new(ProtocolV2::default()),
+            DeviceVersion::V3 => Box::new(ProtocolV3::default()),
+        };
+
         Self {
             peripheral,
             characteristics: None,
+            protocol,
+            version,
             state: Arc::new(Mutex::new(ConnectionState::Disconnected)),
             current_intensity: Arc::new(Mutex::new(Intensity::default())),
             current_waveform_a: Arc::new(Mutex::new(Waveform::default())),
             current_waveform_b: Arc::new(Mutex::new(Waveform::default())),
         }
+    }
+
+    pub fn version(&self) -> DeviceVersion {
+        self.version
     }
 
     /// Default connection timeout in seconds
@@ -190,51 +198,90 @@ impl CoyoteConnection {
         *self.state.lock().await
     }
 
-    async fn find_characteristics(&self) -> Result<CoyoteCharacteristics, ConnectionError> {
+    async fn find_characteristics(&self) -> Result<Vec<Characteristic>, ConnectionError> {
         let services = self.peripheral.services();
 
         let service = services
             .iter()
-            .find(|s| s.uuid == SERVICE_UUID)
-            .ok_or_else(|| ConnectionError::ServiceNotFound(SERVICE_UUID.to_string()))?;
+            .find(|s| s.uuid == self.protocol.service_uuid())
+            .ok_or_else(|| ConnectionError::ServiceNotFound(self.protocol.service_uuid().to_string()))?;
 
-        let pwm_ab2 = service
+        let mut chars = Vec::new();
+
+        // Find primary write characteristic
+        let write_char = service
             .characteristics
             .iter()
-            .find(|c| c.uuid == CHAR_PWM_AB2)
+            .find(|c| c.uuid == self.protocol.write_characteristic_uuid())
             .cloned()
-            .ok_or_else(|| ConnectionError::CharacteristicNotFound("PWM_AB2".to_string()))?;
+            .ok_or_else(|| ConnectionError::CharacteristicNotFound("write".to_string()))?;
+        chars.push(write_char);
 
-        let pwm_a34 = service
-            .characteristics
-            .iter()
-            .find(|c| c.uuid == CHAR_PWM_A34)
-            .cloned()
-            .ok_or_else(|| ConnectionError::CharacteristicNotFound("PWM_A34".to_string()))?;
+        // Find additional characteristics (V2 has 2 more, V3 has none)
+        for uuid in self.protocol.additional_characteristic_uuids() {
+            let char = service
+                .characteristics
+                .iter()
+                .find(|c| c.uuid == uuid)
+                .cloned()
+                .ok_or_else(|| ConnectionError::CharacteristicNotFound(uuid.to_string()))?;
+            chars.push(char);
+        }
 
-        let pwm_b34 = service
-            .characteristics
-            .iter()
-            .find(|c| c.uuid == CHAR_PWM_B34)
-            .cloned()
-            .ok_or_else(|| ConnectionError::CharacteristicNotFound("PWM_B34".to_string()))?;
-
-        Ok(CoyoteCharacteristics {
-            pwm_ab2,
-            pwm_a34,
-            pwm_b34,
-        })
+        Ok(chars)
     }
 
-    pub async fn set_intensity(&self, intensity: Intensity) -> Result<(), ConnectionError> {
+    /// Unified command sending using the version-specific protocol
+    pub async fn send_command(
+        &mut self,
+        intensity_a: u16,
+        intensity_b: u16,
+        freq_a: u16,
+        freq_b: u16,
+    ) -> Result<(), ConnectionError> {
         let chars = self
             .characteristics
             .as_ref()
             .ok_or(ConnectionError::NotConnected)?;
 
-        let data = intensity.encode();
-        self.peripheral
-            .write(&chars.pwm_ab2, &data, WriteType::WithoutResponse)
+        let writes = self
+            .protocol
+            .encode_command(intensity_a, intensity_b, freq_a, freq_b);
+
+        for (char_idx, data) in writes {
+            if char_idx < chars.len() {
+                self.peripheral
+                    .write(&chars[char_idx], &data, WriteType::WithoutResponse)
+                    .await?;
+            }
+        }
+
+        // Update cached state for keepalive
+        {
+            let mut current = self.current_intensity.lock().await;
+            *current = Intensity::new(intensity_a.min(2047), intensity_b.min(2047)).unwrap_or_default();
+        }
+
+        Ok(())
+    }
+
+    /// Set intensity only (V2 backwards compatibility - uses send_command internally)
+    pub async fn set_intensity(&mut self, intensity: Intensity) -> Result<(), ConnectionError> {
+        // Get current waveform to compute frequency
+        let waveform_a = {
+            let current = self.current_waveform_a.lock().await;
+            *current
+        };
+        let waveform_b = {
+            let current = self.current_waveform_b.lock().await;
+            *current
+        };
+
+        // Convert waveform back to frequency (x + y)
+        let freq_a = waveform_a.params.x as u16 + waveform_a.params.y;
+        let freq_b = waveform_b.params.x as u16 + waveform_b.params.y;
+
+        self.send_command(intensity.channel_a, intensity.channel_b, freq_a, freq_b)
             .await?;
 
         {
@@ -245,15 +292,21 @@ impl CoyoteConnection {
         Ok(())
     }
 
-    pub async fn set_waveform_a(&self, waveform: Waveform) -> Result<(), ConnectionError> {
-        let chars = self
-            .characteristics
-            .as_ref()
-            .ok_or(ConnectionError::NotConnected)?;
+    /// Set waveform for channel A (V2 backwards compatibility - uses send_command internally)
+    pub async fn set_waveform_a(&mut self, waveform: Waveform) -> Result<(), ConnectionError> {
+        let intensity = {
+            let current = self.current_intensity.lock().await;
+            *current
+        };
+        let waveform_b = {
+            let current = self.current_waveform_b.lock().await;
+            *current
+        };
 
-        let data = waveform.encode();
-        self.peripheral
-            .write(&chars.pwm_a34, &data, WriteType::WithoutResponse)
+        let freq_a = waveform.params.x as u16 + waveform.params.y;
+        let freq_b = waveform_b.params.x as u16 + waveform_b.params.y;
+
+        self.send_command(intensity.channel_a, intensity.channel_b, freq_a, freq_b)
             .await?;
 
         {
@@ -264,15 +317,21 @@ impl CoyoteConnection {
         Ok(())
     }
 
-    pub async fn set_waveform_b(&self, waveform: Waveform) -> Result<(), ConnectionError> {
-        let chars = self
-            .characteristics
-            .as_ref()
-            .ok_or(ConnectionError::NotConnected)?;
+    /// Set waveform for channel B (V2 backwards compatibility - uses send_command internally)
+    pub async fn set_waveform_b(&mut self, waveform: Waveform) -> Result<(), ConnectionError> {
+        let intensity = {
+            let current = self.current_intensity.lock().await;
+            *current
+        };
+        let waveform_a = {
+            let current = self.current_waveform_a.lock().await;
+            *current
+        };
 
-        let data = waveform.encode();
-        self.peripheral
-            .write(&chars.pwm_b34, &data, WriteType::WithoutResponse)
+        let freq_a = waveform_a.params.x as u16 + waveform_a.params.y;
+        let freq_b = waveform.params.x as u16 + waveform.params.y;
+
+        self.send_command(intensity.channel_a, intensity.channel_b, freq_a, freq_b)
             .await?;
 
         {
@@ -283,8 +342,9 @@ impl CoyoteConnection {
         Ok(())
     }
 
-    pub async fn start_keepalive_loop(&self) -> Result<(), ConnectionError> {
-        let mut ticker = interval(Duration::from_millis(COMMAND_INTERVAL_MS));
+    pub async fn start_keepalive_loop(&mut self) -> Result<(), ConnectionError> {
+        let interval_ms = self.protocol.command_interval_ms();
+        let mut ticker = interval(Duration::from_millis(interval_ms));
 
         loop {
             ticker.tick().await;
@@ -308,17 +368,11 @@ impl CoyoteConnection {
                 *current
             };
 
-            if let Some(chars) = &self.characteristics {
-                self.peripheral
-                    .write(&chars.pwm_ab2, &intensity.encode(), WriteType::WithoutResponse)
-                    .await?;
-                self.peripheral
-                    .write(&chars.pwm_a34, &waveform_a.encode(), WriteType::WithoutResponse)
-                    .await?;
-                self.peripheral
-                    .write(&chars.pwm_b34, &waveform_b.encode(), WriteType::WithoutResponse)
-                    .await?;
-            }
+            let freq_a = waveform_a.params.x as u16 + waveform_a.params.y;
+            let freq_b = waveform_b.params.x as u16 + waveform_b.params.y;
+
+            self.send_command(intensity.channel_a, intensity.channel_b, freq_a, freq_b)
+                .await?;
         }
     }
 }

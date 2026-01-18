@@ -136,7 +136,7 @@ fn draw_devices_panel(frame: &mut Frame, app: &App, area: Rect) {
                     spans.push(Span::raw("  "));
                 }
 
-                // Device name
+                // Device name with version
                 let name_style = if is_connected {
                     Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
                 } else if is_selected && is_active {
@@ -144,7 +144,7 @@ fn draw_devices_panel(frame: &mut Frame, app: &App, area: Rect) {
                 } else {
                     Style::default()
                 };
-                spans.push(Span::styled(&device.name, name_style));
+                spans.push(Span::styled(format!("{} [{}]", &device.name, device.version), name_style));
 
                 // Address
                 spans.push(Span::styled(
@@ -174,12 +174,18 @@ fn draw_devices_panel(frame: &mut Frame, app: &App, area: Rect) {
 fn build_connection_info(app: &App) -> Vec<Line<'static>> {
     let mut lines = vec![];
 
-    // Connection state
+    // Connection state with version when connected
     let (state_text, state_color) = match app.connection_state {
-        ConnectionState::Disconnected => ("Disconnected", Color::Red),
-        ConnectionState::Connecting => ("Connecting...", Color::Yellow),
-        ConnectionState::Connected => ("Connected", Color::Green),
-        ConnectionState::Reconnecting => ("Reconnecting...", Color::Yellow),
+        ConnectionState::Disconnected => ("Disconnected".to_string(), Color::Red),
+        ConnectionState::Connecting => ("Connecting...".to_string(), Color::Yellow),
+        ConnectionState::Connected => {
+            if let Some(version) = app.connected_device_version {
+                (format!("Connected ({})", version), Color::Green)
+            } else {
+                ("Connected".to_string(), Color::Green)
+            }
+        }
+        ConnectionState::Reconnecting => ("Reconnecting...".to_string(), Color::Yellow),
     };
     lines.push(Line::from(vec![
         Span::raw("Status: "),
@@ -789,10 +795,16 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     // Connection state with pause indicator
     let conn_block = Block::default().borders(Borders::ALL);
     let (conn_text, conn_color) = match app.connection_state {
-        ConnectionState::Disconnected => ("Disconnected", Color::Red),
-        ConnectionState::Connecting => ("Connecting...", Color::Yellow),
-        ConnectionState::Connected => ("Connected", Color::Green),
-        ConnectionState::Reconnecting => ("Reconnecting...", Color::Yellow),
+        ConnectionState::Disconnected => ("Disconnected".to_string(), Color::Red),
+        ConnectionState::Connecting => ("Connecting...".to_string(), Color::Yellow),
+        ConnectionState::Connected => {
+            if let Some(version) = app.connected_device_version {
+                (format!("Connected ({})", version), Color::Green)
+            } else {
+                ("Connected".to_string(), Color::Green)
+            }
+        }
+        ConnectionState::Reconnecting => ("Reconnecting...".to_string(), Color::Yellow),
     };
 
     // Build spans for connection + pause indicator

@@ -6,7 +6,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifier
 
 use crate::audio::{AnalysisResult, FrequencyBands, MappingCurve as MapperMappingCurve};
 use crate::ble::connection::ConnectionState;
-use crate::ble::scanner::CoyoteDevice;
+use crate::ble::scanner::{CoyoteDevice, DeviceVersion};
 use crate::config::Config;
 
 /// Which panel is currently focused
@@ -197,6 +197,7 @@ pub struct App {
     pub devices: Vec<CoyoteDevice>,
     pub selected_device: usize,
     pub connection_state: ConnectionState,
+    pub connected_device_version: Option<DeviceVersion>,
     pub battery_level: Option<u8>,
     pub is_scanning: bool,
 
@@ -236,6 +237,7 @@ impl App {
             devices: Vec::new(),
             selected_device: 0,
             connection_state: ConnectionState::Disconnected,
+            connected_device_version: None,
             battery_level: None,
             is_scanning: false,
 
@@ -551,6 +553,7 @@ impl App {
             ConnectionState::Disconnected => {
                 self.status_message = Some("Disconnected".to_string());
                 self.battery_level = None;
+                self.connected_device_version = None;
             }
             ConnectionState::Connecting => {
                 self.status_message = Some("Connecting...".to_string());
@@ -562,6 +565,11 @@ impl App {
                 self.status_message = Some("Reconnecting...".to_string());
             }
         }
+    }
+
+    /// Set the connected device version
+    pub fn set_connected_device_version(&mut self, version: DeviceVersion) {
+        self.connected_device_version = Some(version);
     }
 
     /// Update battery level

@@ -254,27 +254,28 @@ async fn run_app(config: Config) -> Result<(), AppError> {
             _ = ble_interval.tick() => {
                 let mut state = shared_state.lock().await;
 
-                // Send command if connected
-                if let Some(ref connection) = state.connection {
-                    // If paused, send zero output; otherwise send the computed command
-                    let cmd_to_send = if app.is_paused {
-                        // Create a zero-output command when paused
-                        Some(CoyoteCommand::default())
-                    } else {
-                        state.command.clone()
-                    };
+                // Get the command to send before borrowing connection mutably
+                let cmd_to_send = if app.is_paused {
+                    Some(CoyoteCommand::default())
+                } else {
+                    state.command.clone()
+                };
+                let has_connection = state.connection.is_some();
 
+                // Send command if connected
+                if has_connection {
                     if let Some(ref cmd) = cmd_to_send {
-                        // Try to send the command
-                        match send_ble_command(connection, cmd).await {
-                            Ok(()) => {
-                                app.clear_error();
-                            }
-                            Err(e) => {
-                                log::warn!("BLE send error: {}", e);
-                                app.set_error(format!("BLE: {}", e));
-                                // Mark for reconnection
-                                state.reconnect_requested = true;
+                        if let Some(ref mut connection) = state.connection {
+                            match send_ble_command(connection, cmd).await {
+                                Ok(()) => {
+                                    app.clear_error();
+                                }
+                                Err(e) => {
+                                    log::warn!("BLE send error: {}", e);
+                                    app.set_error(format!("BLE: {}", e));
+                                    // Mark for reconnection
+                                    state.reconnect_requested = true;
+                                }
                             }
                         }
                     }
@@ -332,15 +333,19 @@ async fn run_app(config: Config) -> Result<(), AppError> {
                             // Clone what we need from the device to avoid borrow conflicts
                             let device_address = app.devices[idx].address.clone();
                             let device_peripheral = app.devices[idx].peripheral.clone();
+                            let device_version = app.devices[idx].version;
 
-                            log::info!("Connecting to device: {}", device_address);
+                            log::info!("Connecting to {} device: {}", device_version, device_address);
                             app.update_connection_state(coyote_audio::ble::connection::ConnectionState::Connecting);
 
-                            let mut conn = CoyoteConnection::new(device_peripheral);
+                            let mut conn = CoyoteConnection::new(device_peripheral, device_version);
                             match conn.connect_with_retry().await {
                                 Ok(()) => {
-                                    log::info!("Connected to {}", device_address);
+                                    log::info!("Connected to {} ({})", device_address, device_version);
                                     app.update_connection_state(coyote_audio::ble::connection::ConnectionState::Connected);
+
+                                    // Store device version for display
+                                    app.set_connected_device_version(device_version);
 
                                     // Store connection and device address
                                     let mut state = shared_state.lock().await;
@@ -423,7 +428,7 @@ async fn run_app(config: Config) -> Result<(), AppError> {
 
 /// Send BLE command to the connected device
 async fn send_ble_command(
-    connection: &CoyoteConnection,
+    connection: &mut CoyoteConnection,
     command: &CoyoteCommand,
 ) -> Result<(), String> {
     // Check if still connected

@@ -4,7 +4,23 @@ use btleplug::api::{Central, Manager as _, Peripheral as _, ScanFilter};
 use btleplug::platform::{Adapter, Manager, Peripheral};
 use thiserror::Error;
 
-use crate::ble::DEVICE_NAME;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceVersion {
+    V2,
+    V3,
+}
+
+impl std::fmt::Display for DeviceVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DeviceVersion::V2 => write!(f, "V2"),
+            DeviceVersion::V3 => write!(f, "V3"),
+        }
+    }
+}
+
+pub const DEVICE_NAME_V2: &str = "D-LAB ESTIM01";
+pub const DEVICE_NAME_V3: &str = "47L121000";
 
 #[derive(Error, Debug)]
 pub enum ScannerError {
@@ -19,14 +35,16 @@ pub struct CoyoteDevice {
     pub name: String,
     pub address: String,
     pub peripheral: Peripheral,
+    pub version: DeviceVersion,
 }
 
 impl CoyoteDevice {
-    pub fn new(name: String, address: String, peripheral: Peripheral) -> Self {
+    pub fn new(name: String, address: String, peripheral: Peripheral, version: DeviceVersion) -> Self {
         Self {
             name,
             address,
             peripheral,
+            version,
         }
     }
 }
@@ -69,9 +87,12 @@ impl CoyoteScanner {
         for peripheral in peripherals {
             if let Some(properties) = peripheral.properties().await? {
                 if let Some(name) = properties.local_name {
-                    if name == DEVICE_NAME {
+                    if name == DEVICE_NAME_V2 {
                         let address = peripheral.address().to_string();
-                        devices.push(CoyoteDevice::new(name, address, peripheral));
+                        devices.push(CoyoteDevice::new(name, address, peripheral, DeviceVersion::V2));
+                    } else if name == DEVICE_NAME_V3 {
+                        let address = peripheral.address().to_string();
+                        devices.push(CoyoteDevice::new(name, address, peripheral, DeviceVersion::V3));
                     }
                 }
             }
