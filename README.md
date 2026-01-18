@@ -59,6 +59,11 @@ Binary will be at `target/release/coyote-audio`.
 
 ## Controls
 
+### Audio device
+
+This works by listening to an existing audio device.  If you run `pavucontrol` and look at the Recording tab while coyote-audio is running,
+that's where you'll see it listed.  Select "Monitor of {device name}" to choose which device your e-stim audio source is connected to.
+
 ### Global
 
 | Key | Action |
