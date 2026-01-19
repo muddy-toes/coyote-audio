@@ -487,22 +487,20 @@ async fn send_ble_command(
         Err(e) => return Err(format!("Connection check failed: {}", e)),
     }
 
-    // Send intensity
-    connection
-        .set_intensity(command.intensity)
-        .await
-        .map_err(|e| format!("Set intensity: {}", e))?;
+    // Calculate frequencies from waveform params (freq = x + y)
+    let freq_a = command.waveform_a.params.x as u16 + command.waveform_a.params.y;
+    let freq_b = command.waveform_b.params.x as u16 + command.waveform_b.params.y;
 
-    // Send waveforms
+    // Send unified command (writes each characteristic once, not 3x)
     connection
-        .set_waveform_a(command.waveform_a)
+        .send_command(
+            command.intensity.channel_a,
+            command.intensity.channel_b,
+            freq_a,
+            freq_b,
+        )
         .await
-        .map_err(|e| format!("Set waveform A: {}", e))?;
-
-    connection
-        .set_waveform_b(command.waveform_b)
-        .await
-        .map_err(|e| format!("Set waveform B: {}", e))?;
+        .map_err(|e| e.to_string())?;
 
     Ok(())
 }
