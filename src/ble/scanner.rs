@@ -62,6 +62,11 @@ impl CoyoteScanner {
         Ok(Self { adapter })
     }
 
+    /// Get reference to the BLE adapter
+    pub fn adapter(&self) -> &Adapter {
+        &self.adapter
+    }
+
     pub async fn start_scan(&self) -> Result<(), ScannerError> {
         self.adapter.start_scan(ScanFilter::default()).await?;
         Ok(())

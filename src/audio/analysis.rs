@@ -50,6 +50,9 @@ pub struct FrequencyBands {
     pub treble: f32,
 }
 
+/// Number of spectrum analyzer bars to display
+pub const SPECTRUM_BARS: usize = 32;
+
 /// Result of audio analysis
 #[derive(Debug, Clone)]
 pub struct AnalysisResult {
@@ -63,6 +66,11 @@ pub struct AnalysisResult {
     pub left_frequency: Option<f32>,
     /// Dominant frequency detected in right channel (Hz), or None if below threshold
     pub right_frequency: Option<f32>,
+    /// Spectrum analyzer data for left channel, normalized 0.0-1.0 per bar
+    /// Covers 20Hz-20kHz in logarithmic frequency bands
+    pub spectrum_left: [f32; SPECTRUM_BARS],
+    /// Spectrum analyzer data for right channel, normalized 0.0-1.0 per bar
+    pub spectrum_right: [f32; SPECTRUM_BARS],
 }
 
 /// Per-channel analysis result
@@ -109,7 +117,7 @@ impl AudioAnalyzer {
             beat_config: BeatDetectionConfig::default(),
             smoothed_left_freq: None,
             smoothed_right_freq: None,
-            freq_smoothing_alpha: 0.3, // Good balance for 1Hz modulation at 30fps
+            freq_smoothing_alpha: 0.7, // Higher = more responsive to new readings
         }
     }
 
@@ -178,6 +186,10 @@ impl AudioAnalyzer {
         // Beat detection
         let beat_detected = self.detect_beat(left_rms, right_rms);
 
+        // Calculate spectrum analyzer data for each channel
+        let spectrum_left = self.calculate_spectrum(&left_samples);
+        let spectrum_right = self.calculate_spectrum(&right_samples);
+
         AnalysisResult {
             left: ChannelResult {
                 amplitude: left_rms,
@@ -190,6 +202,8 @@ impl AudioAnalyzer {
             beat_detected,
             left_frequency,
             right_frequency,
+            spectrum_left,
+            spectrum_right,
         }
     }
 
@@ -273,8 +287,10 @@ impl AudioAnalyzer {
             return None;
         }
 
-        // Prepare FFT input (apply Hann window)
-        let fft_size = samples.len().next_power_of_two();
+        // Use at least 8192-point FFT for good frequency resolution (~5.9 Hz at 48kHz)
+        // This allows distinguishing frequencies that are close together
+        let min_fft_size = 8192;
+        let fft_size = samples.len().next_power_of_two().max(min_fft_size);
         self.fft_buffer.clear();
         self.fft_buffer.reserve(fft_size);
 
@@ -326,6 +342,78 @@ impl AudioAnalyzer {
         } else {
             None
         }
+    }
+
+    /// Calculate spectrum analyzer data for a single channel
+    /// Returns SPECTRUM_BARS values (0.0-1.0) covering 20Hz-20kHz in log-spaced bands
+    fn calculate_spectrum(&mut self, samples: &[f32]) -> [f32; SPECTRUM_BARS] {
+        let mut spectrum = [0.0f32; SPECTRUM_BARS];
+
+        if samples.is_empty() {
+            return spectrum;
+        }
+
+        // Use at least 4096-point FFT for decent resolution
+        let min_fft_size = 4096;
+        let fft_size = samples.len().next_power_of_two().max(min_fft_size);
+        self.fft_buffer.clear();
+        self.fft_buffer.reserve(fft_size);
+
+        // Apply Hann window
+        for (i, &sample) in samples.iter().enumerate() {
+            let window = 0.5
+                * (1.0
+                    - (2.0 * std::f32::consts::PI * i as f32 / (samples.len() - 1).max(1) as f32)
+                        .cos());
+            self.fft_buffer.push(Complex::new(sample * window, 0.0));
+        }
+        self.fft_buffer.resize(fft_size, Complex::new(0.0, 0.0));
+
+        // Perform FFT
+        let fft = self.fft_planner.plan_fft_forward(fft_size);
+        fft.process(&mut self.fft_buffer);
+
+        let freq_resolution = self.sample_rate as f32 / fft_size as f32;
+        let nyquist_bin = fft_size / 2;
+
+        // Define logarithmically-spaced frequency bands from 20Hz to 20kHz
+        let min_freq = 20.0f32;
+        let max_freq = 20000.0f32;
+        let log_min = min_freq.ln();
+        let log_max = max_freq.ln();
+
+        // For each spectrum bar, sum magnitudes in its frequency range
+        let mut max_magnitude = 0.0f32;
+        for bar in 0..SPECTRUM_BARS {
+            let t0 = bar as f32 / SPECTRUM_BARS as f32;
+            let t1 = (bar + 1) as f32 / SPECTRUM_BARS as f32;
+            let freq_low = (log_min + t0 * (log_max - log_min)).exp();
+            let freq_high = (log_min + t1 * (log_max - log_min)).exp();
+
+            let bin_low = ((freq_low / freq_resolution) as usize).max(1);
+            let bin_high = ((freq_high / freq_resolution) as usize).min(nyquist_bin);
+
+            let mut sum = 0.0f32;
+            let mut count = 0;
+            for bin in bin_low..bin_high {
+                if bin < self.fft_buffer.len() {
+                    sum += self.fft_buffer[bin].norm();
+                    count += 1;
+                }
+            }
+
+            spectrum[bar] = if count > 0 { sum / count as f32 } else { 0.0 };
+            max_magnitude = max_magnitude.max(spectrum[bar]);
+        }
+
+        // Normalize to 0.0-1.0
+        if max_magnitude > 0.0 {
+            for bar in spectrum.iter_mut() {
+                *bar = (*bar / max_magnitude).clamp(0.0, 1.0);
+            }
+        }
+
+        spectrum
     }
 
     /// Separate interleaved stereo samples into left and right channels

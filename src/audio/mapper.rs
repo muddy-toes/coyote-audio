@@ -75,7 +75,7 @@ impl Default for MapperConfig {
             z_value: 10,
             min_pulse_width: 5,
             default_coyote_freq: 55, // Middle of Coyote's 10-100 range
-            ramp_duration: Duration::from_millis(500),
+            ramp_duration: Duration::from_millis(100), // Brief startup ramp only
         }
     }
 }
@@ -213,6 +213,20 @@ impl AudioMapper {
         self.last_coyote_freq_a = coyote_freq_a;
         self.last_coyote_freq_b = coyote_freq_b;
 
+        log::info!(
+            "AudioMapper: audio_freq L={:?} R={:?} -> coyote_freq A={} B={}, intensity A={} B={} (raw A={} B={}, capped A={} B={})",
+            analysis.left_frequency,
+            analysis.right_frequency,
+            coyote_freq_a,
+            coyote_freq_b,
+            ramped_a,
+            ramped_b,
+            raw_intensity_a,
+            raw_intensity_b,
+            capped_a,
+            capped_b
+        );
+
         // Calculate waveform parameters for each channel
         let waveform_a = self.calculate_waveform(coyote_freq_a);
         let waveform_b = self.calculate_waveform(coyote_freq_b);
@@ -264,7 +278,8 @@ impl AudioMapper {
         (curved * Intensity::MAX as f32) as u16
     }
 
-    /// Apply soft ramp-up to prevent sudden intensity jumps
+    /// Apply soft ramp-up to prevent sudden intensity jumps on initial connection.
+    /// Only applies a brief startup ramp - user changes take effect immediately.
     fn apply_ramp(&mut self, target_a: u16, target_b: u16) -> (u16, u16) {
         let now = Instant::now();
 
@@ -275,38 +290,21 @@ impl AudioMapper {
 
         let elapsed = now.duration_since(self.ramp_state.start_time.unwrap());
 
-        // Calculate ramp factor (0.0 to 1.0)
-        let ramp_factor = if elapsed >= self.config.ramp_duration {
-            1.0
-        } else {
-            elapsed.as_secs_f32() / self.config.ramp_duration.as_secs_f32()
-        };
+        // Brief startup ramp only - after ramp_duration, intensity is unrestricted
+        if elapsed >= self.config.ramp_duration {
+            // No ramp - immediate response to user settings
+            self.ramp_state.last_intensity_a = target_a;
+            self.ramp_state.last_intensity_b = target_b;
+            return (target_a, target_b);
+        }
 
-        // Apply ramp to limit how fast intensity can increase
-        let max_increase_a = (Intensity::MAX as f32 * ramp_factor) as u16;
-        let max_increase_b = (Intensity::MAX as f32 * ramp_factor) as u16;
+        // During startup: limit max intensity based on time elapsed
+        let ramp_factor = elapsed.as_secs_f32() / self.config.ramp_duration.as_secs_f32();
+        let max_intensity = (Intensity::MAX as f32 * ramp_factor) as u16;
 
-        // Calculate maximum allowed intensity based on ramp
-        let allowed_a = max_increase_a.min(target_a);
-        let allowed_b = max_increase_b.min(target_b);
+        let ramped_a = target_a.min(max_intensity);
+        let ramped_b = target_b.min(max_intensity);
 
-        // Also limit the rate of increase from the last value
-        // Allow decreasing instantly but increasing only gradually
-        let max_step = (Intensity::MAX as f32 * 0.1) as u16; // 10% per step max increase
-
-        let ramped_a = if allowed_a > self.ramp_state.last_intensity_a {
-            (self.ramp_state.last_intensity_a + max_step).min(allowed_a)
-        } else {
-            allowed_a
-        };
-
-        let ramped_b = if allowed_b > self.ramp_state.last_intensity_b {
-            (self.ramp_state.last_intensity_b + max_step).min(allowed_b)
-        } else {
-            allowed_b
-        };
-
-        // Update last values
         self.ramp_state.last_intensity_a = ramped_a;
         self.ramp_state.last_intensity_b = ramped_b;
 
@@ -361,6 +359,8 @@ mod tests {
             beat_detected: false,
             left_frequency: None,
             right_frequency: None,
+            spectrum_left: [0.0; crate::audio::SPECTRUM_BARS],
+            spectrum_right: [0.0; crate::audio::SPECTRUM_BARS],
         }
     }
 

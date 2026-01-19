@@ -86,9 +86,12 @@ impl Default for SharedState {
 
 #[tokio::main]
 async fn main() -> Result<(), AppError> {
-    // Initialize logging
+    // Initialize logging to file to avoid interfering with TUI
+    let log_file = std::fs::File::create("/tmp/coyote-audio.log")
+        .expect("Failed to create log file");
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
         .format_timestamp_millis()
+        .target(env_logger::Target::Pipe(Box::new(log_file)))
         .init();
 
     log::info!("Starting Coyote Audio");
@@ -155,39 +158,62 @@ async fn run_app(config: Config) -> Result<(), AppError> {
     // Event channel for app events that need async processing
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<AppEvent>(32);
 
-    // Main loop timing
+    // Main loop timing - use Delay behavior to skip missed ticks instead of bursting
     let frame_duration = Duration::from_millis(33); // ~30 fps
     let mut frame_interval = interval(frame_duration);
+    frame_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut ble_interval = interval(Duration::from_millis(COMMAND_INTERVAL_MS));
+    ble_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     // Run the main loop
     loop {
         tokio::select! {
             // TUI frame tick
             _ = frame_interval.tick() => {
-                // Process any pending audio buffers
+                // Process pending audio buffers, keeping only the most recent
+                // to avoid latency from buffered audio
+                let mut got_new_audio = false;
+                let mut new_analysis: Option<AnalysisResult> = None;
                 if let Some(ref rx) = audio_rx {
+                    // Drain all pending buffers, only analyze the last one
+                    let mut latest_buffer = None;
                     while let Ok(buffer) = rx.try_recv() {
-                        let analysis_result = analyzer.analyze(&buffer);
-                        let command = mapper.map(&analysis_result, &app.config);
-
-                        // Update app visualization
-                        app.update_audio(&analysis_result);
-                        app.update_output(OutputValues {
-                            intensity_a: command.intensity.channel_a,
-                            intensity_b: command.intensity.channel_b,
-                            coyote_frequency_a: mapper.last_coyote_freq_a(),
-                            coyote_frequency_b: mapper.last_coyote_freq_b(),
-                            pulse_width: command.waveform_a.params.z,
-                            detected_frequency_left: analysis_result.left_frequency,
-                            detected_frequency_right: analysis_result.right_frequency,
-                        });
-
-                        // Store for BLE sending
-                        let mut state = shared_state.lock().await;
-                        state.analysis = Some(analysis_result);
-                        state.command = Some(command);
+                        latest_buffer = Some(buffer);
+                        got_new_audio = true;
                     }
+                    if let Some(buffer) = latest_buffer {
+                        new_analysis = Some(analyzer.analyze(&buffer));
+                    }
+                }
+
+                // Get or reuse the last analysis result
+                let analysis_result = {
+                    let state = shared_state.lock().await;
+                    new_analysis.or_else(|| state.analysis.clone())
+                };
+
+                // Recalculate command with current config (handles setting changes immediately)
+                if let Some(ref analysis) = analysis_result {
+                    let command = mapper.map(analysis, &app.config);
+
+                    // Update app visualization
+                    app.update_audio(analysis);
+                    app.update_output(OutputValues {
+                        intensity_a: command.intensity.channel_a,
+                        intensity_b: command.intensity.channel_b,
+                        coyote_frequency_a: mapper.last_coyote_freq_a(),
+                        coyote_frequency_b: mapper.last_coyote_freq_b(),
+                        pulse_width: command.waveform_a.params.z,
+                        detected_frequency_left: analysis.left_frequency,
+                        detected_frequency_right: analysis.right_frequency,
+                    });
+
+                    // Store for BLE sending
+                    let mut state = shared_state.lock().await;
+                    if got_new_audio {
+                        state.analysis = analysis_result;
+                    }
+                    state.command = Some(command);
                 }
 
                 // Poll for keyboard input
@@ -238,6 +264,10 @@ async fn run_app(config: Config) -> Result<(), AppError> {
                                     log::info!("Output resumed");
                                 }
                             }
+                            AppEvent::RefreshDisplay => {
+                                // Clear and redraw the entire terminal
+                                let _ = terminal.clear();
+                            }
                             _ => {
                                 // Send other events for async processing
                                 let _ = event_tx.send(event).await;
@@ -262,12 +292,25 @@ async fn run_app(config: Config) -> Result<(), AppError> {
                 };
                 let has_connection = state.connection.is_some();
 
+                if let Some(ref cmd) = cmd_to_send {
+                    log::debug!(
+                        "BLE tick: paused={} connected={} intensity=({},{}) sending...",
+                        app.is_paused, has_connection,
+                        cmd.intensity.channel_a, cmd.intensity.channel_b
+                    );
+                }
+
                 // Send command if connected
                 if has_connection {
                     if let Some(ref cmd) = cmd_to_send {
                         if let Some(ref mut connection) = state.connection {
+                            let send_start = std::time::Instant::now();
                             match send_ble_command(connection, cmd).await {
                                 Ok(()) => {
+                                    let elapsed = send_start.elapsed();
+                                    if elapsed.as_millis() > 50 {
+                                        log::warn!("BLE send took {}ms", elapsed.as_millis());
+                                    }
                                     app.clear_error();
                                 }
                                 Err(e) => {
@@ -332,36 +375,42 @@ async fn run_app(config: Config) -> Result<(), AppError> {
                         if idx < app.devices.len() {
                             // Clone what we need from the device to avoid borrow conflicts
                             let device_address = app.devices[idx].address.clone();
-                            let device_peripheral = app.devices[idx].peripheral.clone();
                             let device_version = app.devices[idx].version;
 
-                            log::info!("Connecting to {} device: {}", device_version, device_address);
-                            app.update_connection_state(coyote_audio::ble::connection::ConnectionState::Connecting);
+                            // Get adapter from scanner to pass to connection
+                            if let Some(ref scanner) = scanner {
+                                let adapter = scanner.adapter().clone();
 
-                            let mut conn = CoyoteConnection::new(device_peripheral, device_version);
-                            match conn.connect_with_retry().await {
-                                Ok(()) => {
-                                    log::info!("Connected to {} ({})", device_address, device_version);
-                                    app.update_connection_state(coyote_audio::ble::connection::ConnectionState::Connected);
+                                log::info!("Connecting to {} device: {}", device_version, device_address);
+                                app.update_connection_state(coyote_audio::ble::connection::ConnectionState::Connecting);
 
-                                    // Store device version for display
-                                    app.set_connected_device_version(device_version);
+                                let mut conn = CoyoteConnection::new(adapter, device_address.clone(), device_version);
+                                match conn.connect_with_retry().await {
+                                    Ok(()) => {
+                                        log::info!("Connected to {} ({})", device_address, device_version);
+                                        app.update_connection_state(coyote_audio::ble::connection::ConnectionState::Connected);
 
-                                    // Store connection and device address
-                                    let mut state = shared_state.lock().await;
-                                    state.connection = Some(conn);
+                                        // Store device version for display
+                                        app.set_connected_device_version(device_version);
 
-                                    // Save last device address
-                                    app.config.last_device_address = Some(device_address);
+                                        // Store connection and device address
+                                        let mut state = shared_state.lock().await;
+                                        state.connection = Some(conn);
 
-                                    // Reset mapper ramp for new connection
-                                    mapper.reset_ramp();
+                                        // Save last device address
+                                        app.config.last_device_address = Some(device_address);
+
+                                        // Reset mapper ramp for new connection
+                                        mapper.reset_ramp();
+                                    }
+                                    Err(e) => {
+                                        log::error!("Connection failed: {}", e);
+                                        app.set_error(format!("Connect failed: {}", e));
+                                        app.update_connection_state(coyote_audio::ble::connection::ConnectionState::Disconnected);
+                                    }
                                 }
-                                Err(e) => {
-                                    log::error!("Connection failed: {}", e);
-                                    app.set_error(format!("Connect failed: {}", e));
-                                    app.update_connection_state(coyote_audio::ble::connection::ConnectionState::Disconnected);
-                                }
+                            } else {
+                                app.set_error("BLE not available".to_string());
                             }
                         }
                     }

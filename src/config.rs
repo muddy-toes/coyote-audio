@@ -35,6 +35,8 @@ pub struct Config {
     pub last_device_address: Option<String>,
     #[serde(default)]
     pub mapping_curve: MappingCurve,
+    #[serde(default)]
+    pub show_spectrum_analyzer: bool,
 }
 
 fn default_max_intensity() -> u16 {
@@ -63,6 +65,7 @@ impl Default for Config {
             freq_band_max: default_freq_band_max(),
             last_device_address: None,
             mapping_curve: MappingCurve::default(),
+            show_spectrum_analyzer: false,
         }
     }
 }
@@ -154,6 +157,7 @@ mod tests {
             freq_band_max: 600.0,
             last_device_address: Some("AA:BB:CC:DD:EE:FF".to_string()),
             mapping_curve: MappingCurve::Exponential,
+            show_spectrum_analyzer: true,
         };
 
         let toml_str = toml::to_string(&config).unwrap();
@@ -168,6 +172,7 @@ mod tests {
             parsed.last_device_address,
             Some("AA:BB:CC:DD:EE:FF".to_string())
         );
+        assert_eq!(parsed.show_spectrum_analyzer, true);
     }
 
     #[test]

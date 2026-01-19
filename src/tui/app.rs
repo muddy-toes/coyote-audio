@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use crate::audio::{AnalysisResult, FrequencyBands, MappingCurve as MapperMappingCurve};
+use crate::audio::{AnalysisResult, FrequencyBands, MappingCurve as MapperMappingCurve, SPECTRUM_BARS};
 use crate::ble::connection::ConnectionState;
 use crate::ble::scanner::{CoyoteDevice, DeviceVersion};
 use crate::config::Config;
@@ -171,6 +171,7 @@ pub enum AppEvent {
     SaveConfig,
     EmergencyStop,
     TogglePause,
+    RefreshDisplay,
 }
 
 /// Real-time output values for display
@@ -211,6 +212,8 @@ pub struct App {
     // Visualization state
     pub audio_levels: (f32, f32), // L/R amplitude 0.0-1.0
     pub frequency_bands: FrequencyBands, // Combined L/R frequency band energy
+    pub spectrum_left: [f32; SPECTRUM_BARS], // Left channel spectrum
+    pub spectrum_right: [f32; SPECTRUM_BARS], // Right channel spectrum
     pub output_values: OutputValues,
     pub beat_detected: bool,
     pub beat_flash_until: Option<Instant>,
@@ -248,6 +251,8 @@ impl App {
 
             audio_levels: (0.0, 0.0),
             frequency_bands: FrequencyBands::default(),
+            spectrum_left: [0.0; SPECTRUM_BARS],
+            spectrum_right: [0.0; SPECTRUM_BARS],
             output_values: OutputValues::default(),
             beat_detected: false,
             beat_flash_until: None,
@@ -297,6 +302,10 @@ impl App {
                 self.should_quit = true;
                 return events;
             }
+            KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                events.push(AppEvent::RefreshDisplay);
+                return events;
+            }
             KeyCode::Esc => {
                 // Emergency stop - set max intensity to 0
                 events.push(AppEvent::EmergencyStop);
@@ -312,6 +321,17 @@ impl App {
                 } else {
                     self.status_message = Some("Output resumed".to_string());
                 }
+                return events;
+            }
+            KeyCode::Char('a') | KeyCode::Char('A') => {
+                // Toggle spectrum analyzer
+                self.config.show_spectrum_analyzer = !self.config.show_spectrum_analyzer;
+                if self.config.show_spectrum_analyzer {
+                    self.status_message = Some("Spectrum analyzer enabled".to_string());
+                } else {
+                    self.status_message = Some("Spectrum analyzer disabled".to_string());
+                }
+                events.push(AppEvent::SaveConfig);
                 return events;
             }
             KeyCode::Char('?') => {
@@ -509,6 +529,8 @@ impl App {
     pub fn update_audio(&mut self, result: &AnalysisResult) {
         self.audio_levels = (result.left.amplitude, result.right.amplitude);
         self.beat_detected = result.beat_detected;
+        self.spectrum_left = result.spectrum_left;
+        self.spectrum_right = result.spectrum_right;
 
         // Average the frequency bands from left and right channels
         self.frequency_bands = FrequencyBands {

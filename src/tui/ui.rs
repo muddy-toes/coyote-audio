@@ -9,6 +9,7 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 
+use crate::audio::SPECTRUM_BARS;
 use crate::ble::connection::ConnectionState;
 
 use super::app::{App, FrequencyBandSelection, ModalState, Panel, ParameterSelection};
@@ -152,9 +153,22 @@ fn draw_devices_panel(frame: &mut Frame, app: &App, area: Rect) {
                     Style::default().fg(Color::DarkGray),
                 ));
 
-                // Connection status
+                // Connection status with battery
                 if is_connected {
                     spans.push(Span::styled(" [Connected]", Style::default().fg(Color::Green)));
+                    if let Some(level) = app.battery_level {
+                        let battery_color = if level > 50 {
+                            Color::Green
+                        } else if level > 20 {
+                            Color::Yellow
+                        } else {
+                            Color::Red
+                        };
+                        spans.push(Span::styled(
+                            format!("  Battery {}%", level),
+                            Style::default().fg(battery_color),
+                        ));
+                    }
                 }
 
                 ListItem::new(Line::from(spans))
@@ -282,7 +296,7 @@ fn draw_freq_band_panel(frame: &mut Frame, app: &App, area: Rect) {
 
     // Help text
     let help_text = Line::from(Span::styled(
-        "  Audio freq in this range -> Coyote freq (10-1000)",
+        "  Audio freq in this range -> Coyote freq (10-100)",
         Style::default().fg(Color::DarkGray),
     ));
     frame.render_widget(Paragraph::new(help_text), chunks[3]);
@@ -462,34 +476,47 @@ fn draw_visualization_panel(frame: &mut Frame, app: &App, area: Rect) {
     let inner_area = block.inner(area);
     frame.render_widget(block, area);
 
-    // Split into sections
-    let viz_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(2),  // Audio amplitude levels (L/R)
-            Constraint::Length(2),  // Detected frequency bars (L/R)
-            Constraint::Length(3),  // Frequency bands (bass/mid/treble)
-            Constraint::Length(1),  // Beat indicator
-            Constraint::Length(2),  // Output values A
-            Constraint::Length(2),  // Output values B
-            Constraint::Min(0),     // Remaining space
-        ])
-        .split(inner_area);
+    // Different layout depending on whether spectrum analyzer is shown
+    if app.config.show_spectrum_analyzer {
+        // Layout with spectrum analyzer at bottom
+        let viz_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(2),  // Audio amplitude levels (L/R)
+                Constraint::Length(2),  // Detected frequency bars (L/R)
+                Constraint::Length(1),  // Spacer
+                Constraint::Length(2),  // Output values A
+                Constraint::Length(2),  // Output values B
+                Constraint::Min(3),     // Spectrum analyzer (fills remaining)
+            ])
+            .split(inner_area);
 
-    // Audio amplitude meters (pure level, no frequency coloring)
-    draw_amplitude_meters(frame, app, viz_chunks[0]);
+        draw_amplitude_meters(frame, app, viz_chunks[0]);
+        draw_frequency_meters(frame, app, viz_chunks[1]);
+        // viz_chunks[2] is spacer
+        draw_output_values(frame, app, viz_chunks[3], viz_chunks[4]);
+        draw_spectrum_analyzer(frame, app, viz_chunks[5]);
+    } else {
+        // Original layout with bass/mid/treble
+        let viz_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(2),  // Audio amplitude levels (L/R)
+                Constraint::Length(2),  // Detected frequency bars (L/R)
+                Constraint::Length(3),  // Frequency bands (bass/mid/treble)
+                Constraint::Length(1),  // Spacer
+                Constraint::Length(2),  // Output values A
+                Constraint::Length(2),  // Output values B
+                Constraint::Min(0),     // Remaining space
+            ])
+            .split(inner_area);
 
-    // Detected frequency meters (position in configured band)
-    draw_frequency_meters(frame, app, viz_chunks[1]);
-
-    // Frequency spectrum (bass/mid/treble bars)
-    draw_frequency_spectrum(frame, app, viz_chunks[2]);
-
-    // Beat indicator
-    draw_beat_indicator(frame, app, viz_chunks[3]);
-
-    // Output values
-    draw_output_values(frame, app, viz_chunks[4], viz_chunks[5]);
+        draw_amplitude_meters(frame, app, viz_chunks[0]);
+        draw_frequency_meters(frame, app, viz_chunks[1]);
+        draw_frequency_spectrum(frame, app, viz_chunks[2]);
+        // viz_chunks[3] is spacer
+        draw_output_values(frame, app, viz_chunks[4], viz_chunks[5]);
+    }
 }
 
 fn draw_amplitude_meters(frame: &mut Frame, app: &App, area: Rect) {
@@ -708,23 +735,130 @@ fn draw_frequency_bar(frame: &mut Frame, area: Rect, label: &str, value: f32, co
     );
 }
 
-fn draw_beat_indicator(frame: &mut Frame, app: &App, area: Rect) {
-    let is_flashing = app.is_beat_flashing();
-    let beat_style = if is_flashing {
-        Style::default()
-            .fg(Color::Red)
-            .add_modifier(Modifier::BOLD | Modifier::RAPID_BLINK)
+/// Draw spectrum analyzer with vertical bars - split left/right channels
+fn draw_spectrum_analyzer(frame: &mut Frame, app: &App, area: Rect) {
+    if area.height < 2 || area.width < 8 {
+        return;
+    }
+
+    // Split area into left and right halves with a small gap
+    let half_width = (area.width / 2).saturating_sub(1);
+    let left_area = Rect::new(area.x, area.y, half_width, area.height);
+    let right_area = Rect::new(area.x + half_width + 2, area.y, half_width, area.height);
+
+    // Draw left channel (cyan tint)
+    draw_spectrum_half(frame, &app.spectrum_left, left_area, Color::Cyan, "L");
+
+    // Draw separator
+    for row in 0..area.height {
+        let sep_area = Rect::new(area.x + half_width, area.y + row, 2, 1);
+        frame.render_widget(
+            Paragraph::new("|").style(Style::default().fg(Color::DarkGray)),
+            sep_area,
+        );
+    }
+
+    // Draw right channel (magenta tint)
+    draw_spectrum_half(frame, &app.spectrum_right, right_area, Color::Magenta, "R");
+}
+
+/// Draw one half of the spectrum analyzer (single channel)
+fn draw_spectrum_half(
+    frame: &mut Frame,
+    spectrum: &[f32; SPECTRUM_BARS],
+    area: Rect,
+    base_color: Color,
+    _label: &str,
+) {
+    if area.height < 1 || area.width < 2 {
+        return;
+    }
+
+    // Calculate how many bars we can fit
+    let available_width = area.width as usize;
+    let num_bars = SPECTRUM_BARS.min(available_width);
+
+    // Calculate bar width and spacing
+    let bar_width = 1;
+    let total_bar_width = num_bars * bar_width;
+    let spacing = if available_width > total_bar_width {
+        (available_width - total_bar_width) / num_bars.max(1)
     } else {
-        Style::default().fg(Color::DarkGray)
+        0
     };
+    let cell_width = bar_width + spacing;
 
-    let beat_text = if is_flashing { "[BEAT]" } else { "[----]" };
+    // Block characters for vertical bars (from empty to full)
+    let bar_chars = [' ', '_', '.', '-', '=', '#', '@'];
+    let max_height = area.height as usize;
 
-    let line = Line::from(vec![
-        Span::raw("Beat: "),
-        Span::styled(beat_text, beat_style),
-    ]);
-    frame.render_widget(Paragraph::new(line), area);
+    // Build the display line by line (top to bottom)
+    let mut lines = Vec::with_capacity(max_height);
+
+    for row in 0..max_height {
+        let threshold = 1.0 - (row as f32 / max_height as f32);
+        let mut line = String::with_capacity(available_width);
+
+        for bar_idx in 0..num_bars {
+            // Map bar index to spectrum data
+            let spectrum_idx = (bar_idx * SPECTRUM_BARS) / num_bars;
+            let value = spectrum.get(spectrum_idx).copied().unwrap_or(0.0);
+
+            // Determine if this cell should be filled
+            let char_to_use = if value >= threshold {
+                '#'
+            } else if value >= threshold - (1.0 / max_height as f32) {
+                let fraction = (value - (threshold - 1.0 / max_height as f32)) * max_height as f32;
+                let idx = ((fraction * (bar_chars.len() - 1) as f32) as usize).min(bar_chars.len() - 1);
+                bar_chars[idx]
+            } else {
+                ' '
+            };
+
+            line.push(char_to_use);
+
+            // Add spacing
+            for _ in 0..spacing {
+                line.push(' ');
+            }
+        }
+
+        lines.push(line);
+    }
+
+    // Render each line with color gradient based on frequency band
+    for (row, line_text) in lines.iter().enumerate() {
+        let y = area.y + row as u16;
+        if y >= area.y + area.height {
+            break;
+        }
+
+        let mut spans = Vec::new();
+        let chars: Vec<char> = line_text.chars().collect();
+        let num_visible_bars = num_bars.min(chars.len());
+
+        for (i, &ch) in chars.iter().enumerate() {
+            let bar_idx = if cell_width > 0 { i / cell_width } else { i };
+
+            // Color gradient: low freq = base color, mid = green, high = varies
+            let color = if bar_idx < num_visible_bars / 3 {
+                base_color
+            } else if bar_idx < 2 * num_visible_bars / 3 {
+                Color::Green
+            } else {
+                Color::Yellow
+            };
+
+            spans.push(Span::styled(
+                ch.to_string(),
+                Style::default().fg(if ch == ' ' { Color::DarkGray } else { color }),
+            ));
+        }
+
+        let line_widget = Paragraph::new(Line::from(spans));
+        let line_area = Rect::new(area.x, y, area.width, 1);
+        frame.render_widget(line_widget, line_area);
+    }
 }
 
 fn draw_output_values(frame: &mut Frame, app: &App, area_a: Rect, area_b: Rect) {
@@ -835,7 +969,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 
     // Key hints
     let help_block = Block::default().borders(Borders::ALL);
-    let help_paragraph = Paragraph::new("q:Quit p:Pause Esc:Stop ?:Help")
+    let help_paragraph = Paragraph::new("q:Quit p:Pause a:Analyzer ?:Help")
         .style(Style::default().fg(Color::DarkGray))
         .block(help_block);
     frame.render_widget(help_paragraph, chunks[2]);
@@ -873,6 +1007,10 @@ fn build_help_content() -> Vec<Line<'static>> {
         Line::from(vec![
             Span::styled("  p       ", Style::default().fg(Color::Yellow)),
             Span::raw("Pause/unpause output"),
+        ]),
+        Line::from(vec![
+            Span::styled("  a       ", Style::default().fg(Color::Yellow)),
+            Span::raw("Toggle spectrum analyzer"),
         ]),
         Line::from(vec![
             Span::styled("  Esc     ", Style::default().fg(Color::Yellow)),
@@ -969,7 +1107,7 @@ fn build_help_content() -> Vec<Line<'static>> {
         Line::from(""),
         Line::from("  For each channel:"),
         Line::from("    - Amplitude (volume) -> Output intensity"),
-        Line::from("    - Detected frequency -> Coyote pulse rate (10-1000)"),
+        Line::from("    - Detected frequency -> Coyote pulse rate (10-100)"),
         Line::from(""),
         Line::from("  The frequency band settings define which audio frequencies"),
         Line::from("  are analyzed and mapped to the Coyote frequency range."),
