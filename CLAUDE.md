@@ -53,6 +53,11 @@ src/
 
 ## Protocol Details
 
+**Always** defer to the protocol docs, with the exception of the channel swap part.  Our channels are not swapped.
+
+- "Humans perceive frequency changes slowly - if you change frequency every 100ms it feels mushy"
+- "Humans perceive pulse width changes quickly - Z modulation every 100ms creates distinct, varied sensations"
+
 ### Coyote V2
 
 - **Service UUID:** `955a180B-0FE2-F5AA-A094-84B8D4F3E8AD`
