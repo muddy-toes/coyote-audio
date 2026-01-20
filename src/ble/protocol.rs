@@ -211,14 +211,6 @@ impl CoyoteProtocol for ProtocolV2 {
         let waveform_a = self.calculate_waveform(freq_a);
         let waveform_b = self.calculate_waveform(freq_b);
 
-        log::info!(
-            "ProtocolV2::encode_command: intensity A={} B={}, freq A={} B={}, waveform A(x={},y={},z={}) B(x={},y={},z={})",
-            intensity_a, intensity_b,
-            freq_a, freq_b,
-            waveform_a.params.x, waveform_a.params.y, waveform_a.params.z,
-            waveform_b.params.x, waveform_b.params.y, waveform_b.params.z
-        );
-
         vec![
             (0, intensity.encode().to_vec()),  // PWM_AB2
             (1, waveform_a.encode().to_vec()), // PWM_A34

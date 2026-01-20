@@ -5,7 +5,6 @@ use btleplug::api::{Central, Characteristic, Peripheral as _, WriteType};
 use btleplug::platform::{Adapter, Peripheral};
 use thiserror::Error;
 use tokio::sync::Mutex;
-use tokio::time::interval;
 use uuid::Uuid;
 
 use super::protocol::{CoyoteProtocol, Intensity, ProtocolV2, Waveform};
@@ -151,6 +150,39 @@ impl CoyoteConnection {
         Ok(())
     }
 
+    /// Initialize V3 device by sending BF command to set soft limits
+    /// Per V3 protocol: this must be sent after every reconnect
+    async fn initialize_v3(&self) -> Result<(), ConnectionError> {
+        let peripheral = self.peripheral()?;
+        let chars = self
+            .characteristics
+            .as_ref()
+            .ok_or(ConnectionError::NotConnected)?;
+
+        // BF command format (7 bytes):
+        // [0] = 0xBF (command header)
+        // [1] = Channel A soft limit (0-200)
+        // [2] = Channel B soft limit (0-200)
+        // [3] = Channel A frequency balance (0-255)
+        // [4] = Channel B frequency balance (0-255)
+        // [5] = Channel A intensity balance (0-255)
+        // [6] = Channel B intensity balance (0-255)
+        //
+        // Set soft limits to 200 (max), balance params to 128 (neutral)
+        let bf_cmd = vec![0xBF, 200, 200, 128, 128, 128, 128];
+
+        peripheral
+            .write(&chars[0], &bf_cmd, WriteType::WithoutResponse)
+            .await?;
+
+        // Brief delay to let device process the command
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        log::info!("V3 device initialized with soft limits set to 200");
+
+        Ok(())
+    }
+
     /// Default connection timeout in seconds
     const CONNECTION_TIMEOUT_SECS: u64 = 15;
     /// Default number of retry attempts
@@ -208,6 +240,11 @@ impl CoyoteConnection {
 
         let characteristics = self.find_characteristics().await?;
         self.characteristics = Some(characteristics);
+
+        // V3 devices need BF command to set soft limits on connect
+        if matches!(self.version, DeviceVersion::V3) {
+            self.initialize_v3().await?;
+        }
 
         {
             let mut state = self.state.lock().await;
@@ -360,12 +397,6 @@ impl CoyoteConnection {
         let peripheral = self.peripheral()?;
         for (char_idx, data) in writes {
             if char_idx < chars.len() {
-                log::info!(
-                    "CoyoteConnection::send_command: char[{}] uuid={} data={:02X?}",
-                    char_idx,
-                    chars[char_idx].uuid,
-                    data
-                );
                 peripheral
                     .write(&chars[char_idx], &data, WriteType::WithoutResponse)
                     .await?;
@@ -456,40 +487,5 @@ impl CoyoteConnection {
         }
 
         Ok(())
-    }
-
-    pub async fn start_keepalive_loop(&mut self) -> Result<(), ConnectionError> {
-        let interval_ms = self.protocol.command_interval_ms();
-        let mut ticker = interval(Duration::from_millis(interval_ms));
-
-        loop {
-            ticker.tick().await;
-
-            let peripheral = self.peripheral()?;
-            if !peripheral.is_connected().await? {
-                return Err(ConnectionError::ConnectionLost);
-            }
-
-            let intensity = {
-                let current = self.current_intensity.lock().await;
-                *current
-            };
-
-            let waveform_a = {
-                let current = self.current_waveform_a.lock().await;
-                *current
-            };
-
-            let waveform_b = {
-                let current = self.current_waveform_b.lock().await;
-                *current
-            };
-
-            let freq_a = waveform_a.params.x as u16 + waveform_a.params.y;
-            let freq_b = waveform_b.params.x as u16 + waveform_b.params.y;
-
-            self.send_command(intensity.channel_a, intensity.channel_b, freq_a, freq_b)
-                .await?;
-        }
     }
 }

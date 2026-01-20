@@ -26,11 +26,15 @@ impl ProtocolV3 {
         ((v2_intensity as u32 * 200) / 2047).min(200) as u8
     }
 
-    /// Map V2-style frequency (10-100) to V3 range (10-240)
+    /// Map frequency from V2 range (10-100) to V3 range (10-240)
+    /// This allows the mapper to work with the same 10-100 range for both protocols,
+    /// while V3 devices get access to their full frequency range.
     fn map_frequency(v2_freq: u16) -> u8 {
-        let clamped = v2_freq.clamp(10, 100);
-        let mapped = 10 + ((clamped - 10) as u32 * (240 - 10)) / (100 - 10);
-        mapped.min(240) as u8
+        // Linear mapping: 10-100 -> 10-240
+        let clamped = v2_freq.clamp(10, 100) as f32;
+        let normalized = (clamped - 10.0) / 90.0; // 0.0 to 1.0
+        let v3_freq = 10.0 + normalized * 230.0; // 10 to 240
+        (v3_freq as u8).clamp(10, 240)
     }
 
     fn next_sequence(&mut self) -> u8 {
@@ -155,28 +159,33 @@ mod tests {
 
     #[test]
     fn test_map_frequency_min() {
+        // 10 in V2 range maps to 10 in V3 range
         assert_eq!(ProtocolV3::map_frequency(10), 10);
     }
 
     #[test]
     fn test_map_frequency_max() {
+        // 100 in V2 range maps to 240 in V3 range
         assert_eq!(ProtocolV3::map_frequency(100), 240);
     }
 
     #[test]
     fn test_map_frequency_mid() {
-        // 55 is midpoint of 10-100, should map to midpoint of 10-240 ≈ 125
+        // 55 is midpoint of V2 range (10-100)
+        // Should map to midpoint of V3 range (10-240) = 125
         let result = ProtocolV3::map_frequency(55);
-        assert!(result >= 120 && result <= 130);
+        assert!(result >= 124 && result <= 126, "Expected ~125, got {}", result);
     }
 
     #[test]
     fn test_map_frequency_clamps_low() {
+        // Values below 10 should clamp to 10 (V3 min)
         assert_eq!(ProtocolV3::map_frequency(0), 10);
     }
 
     #[test]
     fn test_map_frequency_clamps_high() {
+        // Values above 100 should clamp to 100, then map to 240
         assert_eq!(ProtocolV3::map_frequency(200), 240);
     }
 
@@ -219,14 +228,15 @@ mod tests {
     #[test]
     fn test_encode_command_frequencies() {
         let mut proto = ProtocolV3::default();
+        // Input: V2 frequencies 10 and 100
         let commands = proto.encode_command(100, 100, 10, 100);
         let data = &commands[0].1;
 
-        // Channel A frequencies (indices 4-7) should all be 10
+        // Channel A: V2 freq 10 maps to V3 freq 10
         for i in 4..8 {
             assert_eq!(data[i], 10);
         }
-        // Channel B frequencies (indices 12-15) should all be 240
+        // Channel B: V2 freq 100 maps to V3 freq 240
         for i in 12..16 {
             assert_eq!(data[i], 240);
         }

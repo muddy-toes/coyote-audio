@@ -213,20 +213,6 @@ impl AudioMapper {
         self.last_coyote_freq_a = coyote_freq_a;
         self.last_coyote_freq_b = coyote_freq_b;
 
-        log::info!(
-            "AudioMapper: audio_freq L={:?} R={:?} -> coyote_freq A={} B={}, intensity A={} B={} (raw A={} B={}, capped A={} B={})",
-            analysis.left_frequency,
-            analysis.right_frequency,
-            coyote_freq_a,
-            coyote_freq_b,
-            ramped_a,
-            ramped_b,
-            raw_intensity_a,
-            raw_intensity_b,
-            capped_a,
-            capped_b
-        );
-
         // Calculate waveform parameters for each channel
         let waveform_a = self.calculate_waveform(coyote_freq_a);
         let waveform_b = self.calculate_waveform(coyote_freq_b);
