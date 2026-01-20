@@ -208,27 +208,43 @@ impl CoyoteConnection {
 
         let timeout_secs = timeout.as_secs();
 
-        // Wrap the connection attempt in a timeout
-        let connect_future = async {
-            peripheral.connect().await?;
-            peripheral.discover_services().await?;
-            Ok::<_, ConnectionError>(())
+        // Spawn the connection in a separate task so it can be properly aborted
+        // if the timeout fires. This is more robust than tokio::time::timeout
+        // alone, which may not interrupt blocked system calls.
+        let peripheral_clone = peripheral.clone();
+        let connect_handle = tokio::spawn(async move {
+            peripheral_clone.connect().await?;
+            peripheral_clone.discover_services().await?;
+            Ok::<_, btleplug::Error>(())
+        });
+
+        // Race the connection against the timeout
+        let result = tokio::select! {
+            res = connect_handle => {
+                match res {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(e)) => Err(ConnectionError::Bluetooth(e)),
+                    Err(e) => Err(ConnectionError::Bluetooth(btleplug::Error::Other(
+                        format!("Connection task panicked: {}", e).into()
+                    ))),
+                }
+            }
+            _ = tokio::time::sleep(timeout) => {
+                Err(ConnectionError::Timeout(timeout_secs))
+            }
         };
 
-        match tokio::time::timeout(timeout, connect_future).await {
-            Ok(Ok(())) => {
+        match result {
+            Ok(()) => {
                 // Store the peripheral only on successful connection
                 self.peripheral = Some(peripheral);
             }
-            Ok(Err(e)) => {
+            Err(e) => {
+                // Try to disconnect in case partial connection occurred
+                let _ = peripheral.disconnect().await;
                 let mut state = self.state.lock().await;
                 *state = ConnectionState::Disconnected;
                 return Err(e);
-            }
-            Err(_) => {
-                let mut state = self.state.lock().await;
-                *state = ConnectionState::Disconnected;
-                return Err(ConnectionError::Timeout(timeout_secs));
             }
         }
 

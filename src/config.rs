@@ -5,8 +5,6 @@ use std::io;
 use std::path::PathBuf;
 use thiserror::Error;
 
-use crate::audio::MappingCurve;
-
 #[derive(Debug, Error)]
 pub enum ConfigError {
     #[error("Failed to determine config directory")]
@@ -34,8 +32,6 @@ pub struct Config {
     #[serde(default)]
     pub last_device_address: Option<String>,
     #[serde(default)]
-    pub mapping_curve: MappingCurve,
-    #[serde(default)]
     pub show_spectrum_analyzer: bool,
     /// Waveform X value: consecutive pulses (1-31)
     #[serde(default = "default_x_value")]
@@ -53,7 +49,7 @@ fn default_max_intensity() -> u16 {
 }
 
 fn default_sensitivity() -> f32 {
-    0.5
+    1.0
 }
 
 fn default_freq_band_min() -> f32 {
@@ -85,7 +81,6 @@ impl Default for Config {
             freq_band_min: default_freq_band_min(),
             freq_band_max: default_freq_band_max(),
             last_device_address: None,
-            mapping_curve: MappingCurve::default(),
             show_spectrum_analyzer: false,
             x_value: default_x_value(),
             y_value: default_y_value(),
@@ -151,10 +146,6 @@ impl Config {
         self.freq_band_max = value.clamp(self.freq_band_min + 10.0, 2000.0);
     }
 
-    pub fn set_mapping_curve(&mut self, curve: MappingCurve) {
-        self.mapping_curve = curve;
-    }
-
     pub fn set_x_value(&mut self, value: u8) {
         self.x_value = value.clamp(1, 31);
     }
@@ -177,7 +168,7 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.max_intensity_a, 1024);
         assert_eq!(config.max_intensity_b, 1024);
-        assert_eq!(config.sensitivity, 0.5);
+        assert_eq!(config.sensitivity, 1.0);
         assert_eq!(config.freq_band_min, 200.0);
         assert_eq!(config.freq_band_max, 800.0);
         assert!(config.last_device_address.is_none());
@@ -192,7 +183,6 @@ mod tests {
             freq_band_min: 100.0,
             freq_band_max: 600.0,
             last_device_address: Some("AA:BB:CC:DD:EE:FF".to_string()),
-            mapping_curve: MappingCurve::Exponential,
             show_spectrum_analyzer: true,
             x_value: 5,
             y_value: 10,

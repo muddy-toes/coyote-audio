@@ -19,11 +19,11 @@ use tokio::time::interval;
 
 use coyote_audio::audio::{
     AnalysisMode, AnalysisResult, AudioAnalyzer, AudioCapture, AudioCaptureConfig, AudioMapper,
-    CoyoteCommand, MappingCurve as MapperMappingCurve,
+    CoyoteCommand,
 };
 use coyote_audio::ble::{CoyoteConnection, CoyoteScanner, COMMAND_INTERVAL_MS};
 use coyote_audio::config::Config;
-use coyote_audio::tui::{draw, App, AppEvent, MappingCurve, OutputValues};
+use coyote_audio::tui::{draw, App, AppEvent, OutputValues};
 
 /// Application error type
 #[derive(Debug)]
@@ -97,10 +97,16 @@ async fn main() -> Result<(), AppError> {
     log::info!("Starting Coyote Audio");
 
     // Load configuration
-    let config = Config::load().unwrap_or_else(|e| {
+    let mut config = Config::load().unwrap_or_else(|e| {
         log::warn!("Failed to load config: {}, using defaults", e);
         Config::default()
     });
+
+    // Safety: always start with zero intensity regardless of saved config
+    config.max_intensity_a = 0;
+    config.max_intensity_b = 0;
+    // Always use max sensitivity (removed as adjustable parameter)
+    config.sensitivity = 1.0;
 
     // Run the application
     let result = run_app(config).await;
@@ -153,7 +159,6 @@ async fn run_app(config: Config) -> Result<(), AppError> {
     // Analyzer always computes both amplitude and dominant frequency regardless of mode
     let mut analyzer = AudioAnalyzer::new(AnalysisMode::Amplitude, audio_config.sample_rate);
     let mut mapper = AudioMapper::new();
-    mapper.set_intensity_curve(app.config.mapping_curve);
 
     // Event channel for app events that need async processing
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<AppEvent>(32);
@@ -203,7 +208,6 @@ async fn run_app(config: Config) -> Result<(), AppError> {
                         intensity_b: command.intensity.channel_b,
                         coyote_frequency_a: mapper.last_coyote_freq_a(),
                         coyote_frequency_b: mapper.last_coyote_freq_b(),
-                        pulse_width: command.waveform_a.params.z,
                         detected_frequency_left: analysis.left_frequency,
                         detected_frequency_right: analysis.right_frequency,
                     });
@@ -240,11 +244,6 @@ async fn run_app(config: Config) -> Result<(), AppError> {
                                 if let Err(e) = app.config.save() {
                                     log::error!("Failed to save config: {}", e);
                                 }
-                            }
-                            AppEvent::SetMappingCurve(curve) => {
-                                let mapper_curve = tui_curve_to_mapper_curve(curve);
-                                mapper.set_intensity_curve(mapper_curve);
-                                app.config.set_mapping_curve(mapper_curve);
                             }
                             AppEvent::EmergencyStop => {
                                 // Set max intensity to 0 for both channels
@@ -379,6 +378,22 @@ async fn run_app(config: Config) -> Result<(), AppError> {
 
                             // Get adapter from scanner to pass to connection
                             if let Some(ref scanner) = scanner {
+                                // If the device list is stale (>30s old), do a quick rescan to
+                                // refresh the BLE adapter's peripheral cache. This prevents
+                                // connection hangs from stale D-Bus references.
+                                if app.is_device_list_stale() {
+                                    log::info!("Device list stale, doing quick rescan before connect");
+                                    app.status_message = Some("Refreshing device list...".to_string());
+                                    if let Ok(devices) = scanner.scan_for_devices(Duration::from_secs(3)).await {
+                                        app.update_devices(devices);
+                                        // Check if our target device is still in the list
+                                        if !app.devices.iter().any(|d| d.address == device_address) {
+                                            app.set_error("Device not found after rescan - it may have gone to sleep".to_string());
+                                            continue;
+                                        }
+                                    }
+                                }
+
                                 let adapter = scanner.adapter().clone();
 
                                 log::info!("Connecting to {} device: {}", device_version, device_address);
@@ -509,14 +524,4 @@ async fn send_ble_command(
         .map_err(|e| e.to_string())?;
 
     Ok(())
-}
-
-/// Convert TUI MappingCurve to mapper MappingCurve
-fn tui_curve_to_mapper_curve(curve: MappingCurve) -> MapperMappingCurve {
-    match curve {
-        MappingCurve::Linear => MapperMappingCurve::Linear,
-        MappingCurve::Exponential => MapperMappingCurve::Exponential,
-        MappingCurve::Logarithmic => MapperMappingCurve::Logarithmic,
-        MappingCurve::SCurve => MapperMappingCurve::SCurve,
-    }
 }

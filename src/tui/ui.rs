@@ -363,8 +363,6 @@ fn draw_parameters_panel(frame: &mut Frame, app: &App, area: Rect) {
         .constraints([
             Constraint::Length(2),  // Max Intensity A
             Constraint::Length(2),  // Max Intensity B
-            Constraint::Length(2),  // Sensitivity
-            Constraint::Length(2),  // Mapping Curve
             Constraint::Min(0),     // Remaining space
         ])
         .split(inner_area);
@@ -390,38 +388,6 @@ fn draw_parameters_panel(frame: &mut Frame, app: &App, area: Rect) {
         is_active && app.parameter_selection == ParameterSelection::MaxIntensityB,
         Color::Magenta,
     );
-
-    // Sensitivity
-    draw_slider(
-        frame,
-        param_chunks[2],
-        "Sensitivity",
-        (app.config.sensitivity * 100.0) as u16,
-        100,
-        is_active && app.parameter_selection == ParameterSelection::Sensitivity,
-        Color::Yellow,
-    );
-
-    // Mapping Curve (not a slider, but a selector)
-    let curve_selected = is_active && app.parameter_selection == ParameterSelection::MappingCurve;
-    let curve_style = if curve_selected {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-    };
-
-    let curve_line = Line::from(vec![
-        Span::styled(
-            if curve_selected { "> " } else { "  " },
-            curve_style,
-        ),
-        Span::raw("Mapping: "),
-        Span::styled(
-            format!("< {} >", app.mapping_curve.as_str()),
-            curve_style,
-        ),
-    ]);
-    frame.render_widget(Paragraph::new(curve_line), param_chunks[3]);
 }
 
 fn draw_slider(
@@ -893,7 +859,7 @@ fn draw_output_values(frame: &mut Frame, app: &App, area_a: Rect, area_b: Rect) 
     ];
     frame.render_widget(Paragraph::new(a_lines), area_a);
 
-    // Channel B - intensity and output Hz/pulse width
+    // Channel B - intensity and output Hz
     let output_hz_b = if output.coyote_frequency_b > 0 {
         1000 / output.coyote_frequency_b
     } else {
@@ -916,11 +882,6 @@ fn draw_output_values(frame: &mut Frame, app: &App, area_a: Rect, area_b: Rect) 
             Span::styled(
                 format!("{:>3}Hz", output_hz_b),
                 Style::default().fg(Color::Yellow),
-            ),
-            Span::raw("  PW: "),
-            Span::styled(
-                format!("{:>2}", output.pulse_width),
-                Style::default().fg(Color::White),
             ),
         ]),
     ];
@@ -1073,40 +1034,6 @@ fn build_help_content() -> Vec<Line<'static>> {
             Span::styled("  Freq Min/Max      ", Style::default().fg(Color::Green)),
             Span::raw("Audio frequency range for mapping"),
         ]),
-        Line::from(vec![
-            Span::styled("  Sensitivity       ", Style::default().fg(Color::Green)),
-            Span::raw("Gain for audio->intensity (0.0-1.0)"),
-        ]),
-        Line::from(vec![
-            Span::styled("                    ", Style::default().fg(Color::Green)),
-            Span::raw("  0.5: full audio = full output"),
-        ]),
-        Line::from(vec![
-            Span::styled("                    ", Style::default().fg(Color::Green)),
-            Span::raw("  1.0: half audio = full output"),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled(
-            "MAPPING CURVES",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-        )),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("  Linear      ", Style::default().fg(Color::Magenta)),
-            Span::raw("Proportional mapping (1:1)"),
-        ]),
-        Line::from(vec![
-            Span::styled("  Exponential ", Style::default().fg(Color::Magenta)),
-            Span::raw("Sensitive at low levels"),
-        ]),
-        Line::from(vec![
-            Span::styled("  Logarithmic ", Style::default().fg(Color::Magenta)),
-            Span::raw("Sensitive at high levels"),
-        ]),
-        Line::from(vec![
-            Span::styled("  S-Curve     ", Style::default().fg(Color::Magenta)),
-            Span::raw("Smooth transitions, defined midpoint"),
-        ]),
         Line::from(""),
         Line::from(Span::styled(
             "HOW IT WORKS",
@@ -1185,7 +1112,6 @@ fn draw_help_modal(frame: &mut Frame, app: &App) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::app::MappingCurve;
 
     #[test]
     fn test_level_color() {
@@ -1193,13 +1119,5 @@ mod tests {
         assert_eq!(level_color(0.5), Color::Green);
         assert_eq!(level_color(0.75), Color::Yellow);
         assert_eq!(level_color(0.95), Color::Red);
-    }
-
-    #[test]
-    fn test_mapping_curve_display() {
-        assert_eq!(MappingCurve::Linear.as_str(), "Linear");
-        assert_eq!(MappingCurve::Exponential.as_str(), "Exponential");
-        assert_eq!(MappingCurve::Logarithmic.as_str(), "Logarithmic");
-        assert_eq!(MappingCurve::SCurve.as_str(), "S-Curve");
     }
 }

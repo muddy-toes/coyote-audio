@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use crate::audio::{AnalysisResult, FrequencyBands, MappingCurve as MapperMappingCurve, SPECTRUM_BARS};
+use crate::audio::{AnalysisResult, FrequencyBands, SPECTRUM_BARS};
 use crate::ble::connection::ConnectionState;
 use crate::ble::scanner::{CoyoteDevice, DeviceVersion};
 use crate::config::Config;
@@ -55,82 +55,24 @@ pub enum ModalState {
     Help,
 }
 
-/// Mapping curve for audio to intensity conversion
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum MappingCurve {
-    #[default]
-    Linear,
-    Exponential,
-    Logarithmic,
-    SCurve,
-}
-
-impl MappingCurve {
-    pub fn next(self) -> Self {
-        match self {
-            MappingCurve::Linear => MappingCurve::Exponential,
-            MappingCurve::Exponential => MappingCurve::Logarithmic,
-            MappingCurve::Logarithmic => MappingCurve::SCurve,
-            MappingCurve::SCurve => MappingCurve::Linear,
-        }
-    }
-
-    pub fn prev(self) -> Self {
-        match self {
-            MappingCurve::Linear => MappingCurve::SCurve,
-            MappingCurve::Exponential => MappingCurve::Linear,
-            MappingCurve::Logarithmic => MappingCurve::Exponential,
-            MappingCurve::SCurve => MappingCurve::Logarithmic,
-        }
-    }
-
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            MappingCurve::Linear => "Linear",
-            MappingCurve::Exponential => "Exponential",
-            MappingCurve::Logarithmic => "Logarithmic",
-            MappingCurve::SCurve => "S-Curve",
-        }
-    }
-
-    /// Convert from the mapper's MappingCurve type
-    pub fn from_mapper_curve(curve: MapperMappingCurve) -> Self {
-        match curve {
-            MapperMappingCurve::Linear => MappingCurve::Linear,
-            MapperMappingCurve::Exponential => MappingCurve::Exponential,
-            MapperMappingCurve::Logarithmic => MappingCurve::Logarithmic,
-            MapperMappingCurve::SCurve => MappingCurve::SCurve,
-        }
-    }
-}
-
 /// Which parameter is selected in the Parameters panel
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ParameterSelection {
     #[default]
     MaxIntensityA,
     MaxIntensityB,
-    Sensitivity,
-    MappingCurve,
 }
 
 impl ParameterSelection {
     pub fn next(self) -> Self {
         match self {
             ParameterSelection::MaxIntensityA => ParameterSelection::MaxIntensityB,
-            ParameterSelection::MaxIntensityB => ParameterSelection::Sensitivity,
-            ParameterSelection::Sensitivity => ParameterSelection::MappingCurve,
-            ParameterSelection::MappingCurve => ParameterSelection::MaxIntensityA,
+            ParameterSelection::MaxIntensityB => ParameterSelection::MaxIntensityA,
         }
     }
 
     pub fn prev(self) -> Self {
-        match self {
-            ParameterSelection::MaxIntensityA => ParameterSelection::MappingCurve,
-            ParameterSelection::MaxIntensityB => ParameterSelection::MaxIntensityA,
-            ParameterSelection::Sensitivity => ParameterSelection::MaxIntensityB,
-            ParameterSelection::MappingCurve => ParameterSelection::Sensitivity,
-        }
+        self.next() // Only 2 options, prev == next
     }
 }
 
@@ -164,8 +106,6 @@ pub enum AppEvent {
     Disconnect,
     SetMaxIntensityA(u16),
     SetMaxIntensityB(u16),
-    SetSensitivity(f32),
-    SetMappingCurve(MappingCurve),
     SetFreqBandMin(f32),
     SetFreqBandMax(f32),
     SaveConfig,
@@ -181,7 +121,6 @@ pub struct OutputValues {
     pub intensity_b: u16,
     pub coyote_frequency_a: u16,
     pub coyote_frequency_b: u16,
-    pub pulse_width: u8,
     pub detected_frequency_left: Option<f32>,
     pub detected_frequency_right: Option<f32>,
 }
@@ -201,13 +140,13 @@ pub struct App {
     pub connected_device_version: Option<DeviceVersion>,
     pub battery_level: Option<u8>,
     pub is_scanning: bool,
+    pub last_scan_time: Option<Instant>,
 
     // Frequency band panel state
     pub freq_band_selection: FrequencyBandSelection,
 
     // Parameters panel state
     pub parameter_selection: ParameterSelection,
-    pub mapping_curve: MappingCurve,
 
     // Visualization state
     pub audio_levels: (f32, f32), // L/R amplitude 0.0-1.0
@@ -229,7 +168,6 @@ pub struct App {
 
 impl App {
     pub fn new(config: Config) -> Self {
-        let mapping_curve = MappingCurve::from_mapper_curve(config.mapping_curve);
         Self {
             config,
             active_panel: Panel::default(),
@@ -243,11 +181,11 @@ impl App {
             connected_device_version: None,
             battery_level: None,
             is_scanning: false,
+            last_scan_time: None,
 
             freq_band_selection: FrequencyBandSelection::default(),
 
             parameter_selection: ParameterSelection::default(),
-            mapping_curve,
 
             audio_levels: (0.0, 0.0),
             frequency_bands: FrequencyBands::default(),
@@ -508,20 +446,6 @@ impl App {
                 self.config.set_max_intensity_b(new_val);
                 events.push(AppEvent::SetMaxIntensityB(new_val));
             }
-            ParameterSelection::Sensitivity => {
-                let current = self.config.sensitivity;
-                let new_val = (current + delta as f32 * 0.05).clamp(0.0, 1.0);
-                self.config.set_sensitivity(new_val);
-                events.push(AppEvent::SetSensitivity(new_val));
-            }
-            ParameterSelection::MappingCurve => {
-                if delta > 0 {
-                    self.mapping_curve = self.mapping_curve.next();
-                } else {
-                    self.mapping_curve = self.mapping_curve.prev();
-                }
-                events.push(AppEvent::SetMappingCurve(self.mapping_curve));
-            }
         }
     }
 
@@ -560,12 +484,21 @@ impl App {
     pub fn update_devices(&mut self, devices: Vec<CoyoteDevice>) {
         self.devices = devices;
         self.is_scanning = false;
+        self.last_scan_time = Some(Instant::now());
         if self.devices.is_empty() {
             self.status_message = Some("No devices found. Press 's' to scan again.".to_string());
         } else {
             self.status_message = Some(format!("Found {} device(s)", self.devices.len()));
         }
         self.selected_device = 0;
+    }
+
+    /// Check if the device list is stale (older than 30 seconds)
+    pub fn is_device_list_stale(&self) -> bool {
+        match self.last_scan_time {
+            Some(t) => t.elapsed() > Duration::from_secs(30),
+            None => true, // No scan yet = stale
+        }
     }
 
     /// Update connection state
@@ -641,20 +574,11 @@ mod tests {
     }
 
     #[test]
-    fn test_mapping_curve_cycle() {
-        let curve = MappingCurve::Linear;
-        assert_eq!(curve.next(), MappingCurve::Exponential);
-        assert_eq!(curve.next().next().next().next(), MappingCurve::Linear);
-    }
-
-    #[test]
     fn test_parameter_selection_cycle() {
         let sel = ParameterSelection::MaxIntensityA;
         assert_eq!(sel.next(), ParameterSelection::MaxIntensityB);
-        assert_eq!(sel.next().next(), ParameterSelection::Sensitivity);
-        assert_eq!(sel.next().next().next(), ParameterSelection::MappingCurve);
         // Full cycle back to start
-        assert_eq!(sel.next().next().next().next(), ParameterSelection::MaxIntensityA);
+        assert_eq!(sel.next().next(), ParameterSelection::MaxIntensityA);
     }
 
     #[test]

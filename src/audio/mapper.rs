@@ -5,56 +5,14 @@
 
 use std::time::{Duration, Instant};
 
-use serde::{Deserialize, Serialize};
-
 use crate::ble::protocol::{Intensity, Waveform, WaveformParams};
 use crate::config::Config;
 
 use super::AnalysisResult;
 
-/// Mapping curve for intensity scaling
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub enum MappingCurve {
-    /// Linear mapping: output = input
-    #[default]
-    Linear,
-    /// Exponential: more responsive at low levels, compressed at high
-    /// output = input^2
-    Exponential,
-    /// Logarithmic: more responsive at high levels, compressed at low
-    /// output = log(1 + input * (e - 1))
-    Logarithmic,
-    /// S-Curve: smooth transition, gentle at extremes, steeper in middle
-    /// Uses a smoothstep function: 3x^2 - 2x^3
-    SCurve,
-}
-
-impl MappingCurve {
-    /// Apply the curve to a normalized value (0.0-1.0)
-    pub fn apply(&self, value: f32) -> f32 {
-        let clamped = value.clamp(0.0, 1.0);
-        match self {
-            MappingCurve::Linear => clamped,
-            MappingCurve::Exponential => clamped * clamped,
-            MappingCurve::Logarithmic => {
-                // log(1 + x * (e - 1)) for x in [0,1] maps to [0,1]
-                let e_minus_1 = std::f32::consts::E - 1.0;
-                (1.0 + clamped * e_minus_1).ln()
-            }
-            MappingCurve::SCurve => {
-                // Smoothstep: 3x^2 - 2x^3
-                // Gentle at 0 and 1, steeper in the middle
-                clamped * clamped * (3.0 - 2.0 * clamped)
-            }
-        }
-    }
-}
-
 /// Configuration for the audio-to-signal mapper
 #[derive(Debug, Clone)]
 pub struct MapperConfig {
-    /// Intensity mapping curve
-    pub intensity_curve: MappingCurve,
     /// Fixed X (pulse burst duration) value (0-31 ms)
     pub x_value: u8,
     /// Fixed Z (pulse width) value (0-31, units of 5us)
@@ -70,7 +28,6 @@ pub struct MapperConfig {
 impl Default for MapperConfig {
     fn default() -> Self {
         Self {
-            intensity_curve: MappingCurve::Linear,
             x_value: 1,   // Single pulse per cycle (matches ESP32 AudioBase)
             z_value: 20,  // Wide pulses (100µs) feel more continuous
             min_pulse_width: 5,
@@ -158,11 +115,6 @@ impl AudioMapper {
     /// Get the current mapper configuration
     pub fn config(&self) -> &MapperConfig {
         &self.config
-    }
-
-    /// Set the intensity mapping curve
-    pub fn set_intensity_curve(&mut self, curve: MappingCurve) {
-        self.config.intensity_curve = curve;
     }
 
     /// Reset the ramp state (call when starting a new session)
@@ -265,14 +217,11 @@ impl AudioMapper {
 
     /// Calculate raw intensity (0-2047) from amplitude (0.0-1.0)
     fn calculate_raw_intensity(&self, amplitude: f32, sensitivity: f32) -> u16 {
-        // Apply sensitivity scaling
+        // Apply sensitivity scaling (linear mapping)
         let scaled = (amplitude * sensitivity * 2.0).clamp(0.0, 1.0);
 
-        // Apply the mapping curve
-        let curved = self.config.intensity_curve.apply(scaled);
-
         // Scale to protocol range
-        (curved * Intensity::MAX as f32) as u16
+        (scaled * Intensity::MAX as f32) as u16
     }
 
     /// Apply soft ramp-up to prevent sudden intensity jumps on initial connection.
@@ -359,51 +308,6 @@ mod tests {
             spectrum_left: [0.0; crate::audio::SPECTRUM_BARS],
             spectrum_right: [0.0; crate::audio::SPECTRUM_BARS],
         }
-    }
-
-    #[test]
-    fn test_mapping_curve_linear() {
-        let curve = MappingCurve::Linear;
-        assert_eq!(curve.apply(0.0), 0.0);
-        assert_eq!(curve.apply(0.5), 0.5);
-        assert_eq!(curve.apply(1.0), 1.0);
-    }
-
-    #[test]
-    fn test_mapping_curve_exponential() {
-        let curve = MappingCurve::Exponential;
-        assert_eq!(curve.apply(0.0), 0.0);
-        assert_eq!(curve.apply(0.5), 0.25); // 0.5^2
-        assert_eq!(curve.apply(1.0), 1.0);
-    }
-
-    #[test]
-    fn test_mapping_curve_logarithmic() {
-        let curve = MappingCurve::Logarithmic;
-        assert_eq!(curve.apply(0.0), 0.0);
-        assert!((curve.apply(1.0) - 1.0).abs() < 0.001);
-        // Logarithmic should be higher than linear at midpoint
-        assert!(curve.apply(0.5) > 0.5);
-    }
-
-    #[test]
-    fn test_mapping_curve_scurve() {
-        let curve = MappingCurve::SCurve;
-        assert_eq!(curve.apply(0.0), 0.0);
-        assert_eq!(curve.apply(1.0), 1.0);
-        // S-curve at 0.5 should equal 0.5 (inflection point)
-        assert!((curve.apply(0.5) - 0.5).abs() < 0.001);
-        // S-curve should be below linear at 0.25 (gentle start)
-        assert!(curve.apply(0.25) < 0.25);
-        // S-curve should be above linear at 0.75 (steep middle already passed)
-        assert!(curve.apply(0.75) > 0.75);
-    }
-
-    #[test]
-    fn test_mapping_curve_clamps_input() {
-        let curve = MappingCurve::Linear;
-        assert_eq!(curve.apply(-0.5), 0.0);
-        assert_eq!(curve.apply(1.5), 1.0);
     }
 
     #[test]
