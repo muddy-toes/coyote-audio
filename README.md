@@ -1,8 +1,12 @@
 # Coyote Audio
 
-Audio-reactive e-stim controller for the DG-Lab Coyote V2 device.
+Audio-reactive e-stim controller for the DG-Lab Coyote device and linux.
 
 Captures system audio via PipeWire, analyzes amplitude and frequency, and sends real-time stimulation commands over Bluetooth Low Energy.
+
+THIS IS EXPERIMENTAL SOFTWARE.  USE AT YOUR OWN RISK.
+
+In particular, Coyote V3 support has not even been tested as I do not own a V3 device.
 
 ## How It Works
 
