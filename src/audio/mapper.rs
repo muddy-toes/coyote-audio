@@ -71,10 +71,10 @@ impl Default for MapperConfig {
     fn default() -> Self {
         Self {
             intensity_curve: MappingCurve::Linear,
-            x_value: 10,
-            z_value: 10,
+            x_value: 1,   // Single pulse per cycle (matches ESP32 AudioBase)
+            z_value: 20,  // Wide pulses (100µs) feel more continuous
             min_pulse_width: 5,
-            default_coyote_freq: 55, // Middle of Coyote's 10-100 range
+            default_coyote_freq: 50, // Middle of range when no frequency detected
             ramp_duration: Duration::from_millis(100), // Brief startup ramp only
         }
     }
@@ -129,11 +129,13 @@ pub struct AudioMapper {
 impl AudioMapper {
     /// Create a new mapper with default configuration
     pub fn new() -> Self {
+        let config = MapperConfig::default();
+        let default_freq = config.default_coyote_freq;
         Self {
-            config: MapperConfig::default(),
+            config,
             ramp_state: RampState::default(),
-            last_coyote_freq_a: 55,
-            last_coyote_freq_b: 55,
+            last_coyote_freq_a: default_freq,
+            last_coyote_freq_b: default_freq,
         }
     }
 
@@ -228,27 +230,36 @@ impl AudioMapper {
         }
     }
 
-    /// Map the detected audio frequency to Coyote's frequency range (10-100)
+    /// Map the detected audio frequency to Coyote's frequency range
     ///
-    /// If the audio frequency is within [freq_band_min, freq_band_max], map it linearly
-    /// to Coyote's [10, 100] range. Otherwise, use the default frequency.
+    /// Audio frequencies are clamped to [freq_band_min, freq_band_max], then mapped
+    /// INVERSELY to output frequency:
+    /// - High audio freq (band_max) → low Y → fast output (~100Hz)
+    /// - Low audio freq (band_min) → high Y → slow output (~10Hz)
     fn map_frequency(
         &self,
         audio_freq: Option<f32>,
         band_min: f32,
         band_max: f32,
     ) -> u16 {
-        const COYOTE_FREQ_MIN: f32 = 10.0;
-        const COYOTE_FREQ_MAX: f32 = 100.0;
+        // With X=1: coyote_freq = 1 + Y, so Y = coyote_freq - 1
+        // coyote_freq=10 → Y=9 → period=10ms → 100Hz output (fast)
+        // coyote_freq=100 → Y=99 → period=100ms → 10Hz output (slow)
+        const COYOTE_FREQ_MIN: f32 = 10.0;  // 100Hz output (fast)
+        const COYOTE_FREQ_MAX: f32 = 100.0; // 10Hz output (slow)
 
         match audio_freq {
-            Some(freq) if freq >= band_min && freq <= band_max => {
-                // Linear mapping from [band_min, band_max] to [10, 100]
-                let normalized = (freq - band_min) / (band_max - band_min);
-                let coyote_freq = COYOTE_FREQ_MIN + normalized * (COYOTE_FREQ_MAX - COYOTE_FREQ_MIN);
+            Some(freq) => {
+                // Clamp to band edges
+                let clamped = freq.clamp(band_min, band_max);
+                // Normalize: 0 at band_min, 1 at band_max
+                let normalized = (clamped - band_min) / (band_max - band_min);
+                // INVERT: high audio freq (normalized=1) → low coyote_freq → fast output
+                // low audio freq (normalized=0) → high coyote_freq → slow output
+                let coyote_freq = COYOTE_FREQ_MAX - normalized * (COYOTE_FREQ_MAX - COYOTE_FREQ_MIN);
                 (coyote_freq as u16).clamp(10, 100)
             }
-            _ => self.config.default_coyote_freq,
+            None => self.config.default_coyote_freq,
         }
     }
 
@@ -622,22 +633,21 @@ mod tests {
         let freq_a = mapper.last_coyote_freq_a();
         let freq_b = mapper.last_coyote_freq_b();
 
-        // 300 Hz is at (300-100)/(2000-100) = 200/1900 ~= 10.5% of the range
-        // Maps to 10 + 0.105 * 90 ~= 19
-        // 1500 Hz is at (1500-100)/(2000-100) = 1400/1900 ~= 73.7% of the range
-        // Maps to 10 + 0.737 * 90 ~= 76
+        // Mapping is INVERTED: high audio freq → low coyote_freq → fast output
+        // 300 Hz (low audio) → high coyote_freq → slow output
+        // 1500 Hz (high audio) → low coyote_freq → fast output
 
-        // Channel A (left) should have lower Coyote freq than Channel B (right)
+        // Channel A (left, low audio 300Hz) should have HIGHER Coyote freq than Channel B (right, high audio 1500Hz)
         assert!(
-            freq_a < freq_b,
-            "Left freq {} Hz should map to lower Coyote freq than right, but got A={} B={}",
-            300.0, freq_a, freq_b
+            freq_a > freq_b,
+            "Left freq 300 Hz should map to HIGHER Coyote freq (slower output) than right 1500 Hz, but got A={} B={}",
+            freq_a, freq_b
         );
 
-        // Verify waveforms are different
+        // Verify waveforms are different - higher coyote_freq means higher Y
         assert!(
-            cmd.waveform_a.params.y < cmd.waveform_b.params.y,
-            "Waveform A Y should be less than B, got A.y={} B.y={}",
+            cmd.waveform_a.params.y > cmd.waveform_b.params.y,
+            "Waveform A Y should be greater than B (slower output), got A.y={} B.y={}",
             cmd.waveform_a.params.y, cmd.waveform_b.params.y
         );
     }
@@ -653,8 +663,8 @@ mod tests {
 
         let _cmd = mapper.map(&analysis, &config);
 
-        // Both channels should use the default Coyote frequency (55)
-        assert_eq!(mapper.last_coyote_freq_a(), 55);
-        assert_eq!(mapper.last_coyote_freq_b(), 55);
+        // Both channels should use the default Coyote frequency (50 = middle of range)
+        assert_eq!(mapper.last_coyote_freq_a(), 50);
+        assert_eq!(mapper.last_coyote_freq_b(), 50);
     }
 }

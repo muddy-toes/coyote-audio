@@ -53,7 +53,7 @@ src/
 
 ## Protocol Details
 
-**Always** defer to the protocol docs, with the exception of the channel swap part.  Our channels are not swapped.
+**Always** defer to the protocol docs.  Let me say that again.  **Always** defer to the protocol docs.
 
 - "Humans perceive frequency changes slowly - if you change frequency every 100ms it feels mushy"
 - "Humans perceive pulse width changes quickly - Z modulation every 100ms creates distinct, varied sensations"

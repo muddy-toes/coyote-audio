@@ -864,7 +864,13 @@ fn draw_spectrum_half(
 fn draw_output_values(frame: &mut Frame, app: &App, area_a: Rect, area_b: Rect) {
     let output = &app.output_values;
 
-    // Channel A - intensity and Coyote freq
+    // Channel A - intensity and output Hz
+    // coyote_freq is period in ms, so output Hz = 1000 / coyote_freq
+    let output_hz_a = if output.coyote_frequency_a > 0 {
+        1000 / output.coyote_frequency_a
+    } else {
+        0
+    };
     let a_lines = vec![
         Line::from(vec![
             Span::styled(
@@ -878,16 +884,21 @@ fn draw_output_values(frame: &mut Frame, app: &App, area_a: Rect, area_b: Rect) 
                 format!("{:>4}", output.intensity_a),
                 Style::default().fg(Color::White),
             ),
-            Span::raw("  Freq: "),
+            Span::raw("  Out: "),
             Span::styled(
-                format!("{:>4}", output.coyote_frequency_a),
+                format!("{:>3}Hz", output_hz_a),
                 Style::default().fg(Color::Yellow),
             ),
         ]),
     ];
     frame.render_widget(Paragraph::new(a_lines), area_a);
 
-    // Channel B - intensity and Coyote freq/pulse width
+    // Channel B - intensity and output Hz/pulse width
+    let output_hz_b = if output.coyote_frequency_b > 0 {
+        1000 / output.coyote_frequency_b
+    } else {
+        0
+    };
     let b_lines = vec![
         Line::from(vec![
             Span::styled(
@@ -901,9 +912,9 @@ fn draw_output_values(frame: &mut Frame, app: &App, area_a: Rect, area_b: Rect) 
                 format!("{:>4}", output.intensity_b),
                 Style::default().fg(Color::White),
             ),
-            Span::raw("  Freq: "),
+            Span::raw("  Out: "),
             Span::styled(
-                format!("{:>4}", output.coyote_frequency_b),
+                format!("{:>3}Hz", output_hz_b),
                 Style::default().fg(Color::Yellow),
             ),
             Span::raw("  PW: "),

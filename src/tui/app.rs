@@ -653,6 +653,7 @@ mod tests {
         assert_eq!(sel.next(), ParameterSelection::MaxIntensityB);
         assert_eq!(sel.next().next(), ParameterSelection::Sensitivity);
         assert_eq!(sel.next().next().next(), ParameterSelection::MappingCurve);
+        // Full cycle back to start
         assert_eq!(sel.next().next().next().next(), ParameterSelection::MaxIntensityA);
     }
 

@@ -305,7 +305,7 @@ async fn run_app(config: Config) -> Result<(), AppError> {
                     if let Some(ref cmd) = cmd_to_send {
                         if let Some(ref mut connection) = state.connection {
                             let send_start = std::time::Instant::now();
-                            match send_ble_command(connection, cmd).await {
+                            match send_ble_command(connection, cmd, &app.config).await {
                                 Ok(()) => {
                                     let elapsed = send_start.elapsed();
                                     if elapsed.as_millis() > 50 {
@@ -479,6 +479,7 @@ async fn run_app(config: Config) -> Result<(), AppError> {
 async fn send_ble_command(
     connection: &mut CoyoteConnection,
     command: &CoyoteCommand,
+    _config: &Config,
 ) -> Result<(), String> {
     // Check if still connected
     match connection.is_connected().await {
@@ -487,11 +488,16 @@ async fn send_ble_command(
         Err(e) => return Err(format!("Connection check failed: {}", e)),
     }
 
-    // Calculate frequencies from waveform params (freq = x + y)
-    let freq_a = command.waveform_a.params.x as u16 + command.waveform_a.params.y;
-    let freq_b = command.waveform_b.params.x as u16 + command.waveform_b.params.y;
+    // Fixed waveform params: X=1 (single pulse), Z=20 (100us pulse width)
+    connection.set_waveform_params(1, 20);
 
-    // Send unified command (writes each characteristic once, not 3x)
+    // Use per-channel Y from the mapper (audio frequency controls output frequency)
+    // freq = X + Y, where Y is calculated from audio frequency
+    // Left audio freq -> Channel A, Right audio freq -> Channel B
+    let freq_a = 1 + command.waveform_a.params.y;  // X=1
+    let freq_b = 1 + command.waveform_b.params.y;  // X=1
+
+    // Send command with per-channel frequencies
     connection
         .send_command(
             command.intensity.channel_a,

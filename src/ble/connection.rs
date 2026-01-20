@@ -377,6 +377,12 @@ impl CoyoteConnection {
         Ok(chars)
     }
 
+    /// Set waveform parameters (X and Z values) on the protocol
+    pub fn set_waveform_params(&mut self, x: u8, z: u8) {
+        self.protocol.set_x_value(x);
+        self.protocol.set_z_value(z);
+    }
+
     /// Unified command sending using the version-specific protocol
     pub async fn send_command(
         &mut self,

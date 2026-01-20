@@ -31,6 +31,12 @@ pub trait CoyoteProtocol: Send + Sync {
 
     /// Maximum frequency value for this protocol
     fn max_frequency(&self) -> u16;
+
+    /// Set the X value (pulses per cycle) for waveform generation
+    fn set_x_value(&mut self, _x: u8) {}
+
+    /// Set the Z value (pulse width) for waveform generation
+    fn set_z_value(&mut self, _z: u8) {}
 }
 
 #[derive(Error, Debug)]
@@ -176,8 +182,8 @@ pub struct ProtocolV2 {
 impl Default for ProtocolV2 {
     fn default() -> Self {
         Self {
-            x_value: 10,
-            z_value: 10,
+            x_value: 1,   // Single pulse per cycle (matches ESP32 AudioBase)
+            z_value: 20,  // Wide pulses (100µs) feel more continuous
         }
     }
 }
@@ -212,9 +218,9 @@ impl CoyoteProtocol for ProtocolV2 {
         let waveform_b = self.calculate_waveform(freq_b);
 
         vec![
-            (0, intensity.encode().to_vec()),  // PWM_AB2
-            (1, waveform_a.encode().to_vec()), // PWM_A34
-            (2, waveform_b.encode().to_vec()), // PWM_B34
+            (0, intensity.encode().to_vec()),  // PWM_AB2 - intensity for both channels
+            (1, waveform_b.encode().to_vec()), // PWM_A34 = "B通道波形数据" = Channel B waveform
+            (2, waveform_a.encode().to_vec()), // PWM_B34 = "A通道波形数据" = Channel A waveform
         ]
     }
 
@@ -228,6 +234,14 @@ impl CoyoteProtocol for ProtocolV2 {
 
     fn max_frequency(&self) -> u16 {
         100 // We use 10-100 range
+    }
+
+    fn set_x_value(&mut self, x: u8) {
+        self.x_value = x.clamp(1, 31);
+    }
+
+    fn set_z_value(&mut self, z: u8) {
+        self.z_value = z.clamp(1, 31);
     }
 }
 
