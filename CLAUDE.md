@@ -10,8 +10,15 @@ Audio-reactive e-stim controller for DG-Lab Coyote V2/V3 devices. Captures audio
 
 ```bash
 cargo build --release    # Binary: target/release/coyote-audio
-cargo test --lib         # Run unit tests (74 tests)
+cargo test --lib         # Run unit tests (67 tests)
+cargo test test_name     # Run single test by name
+cargo test mapper::tests::  # Run tests in specific module
 ```
+
+## Debug & Logging
+
+- Logs written to `/tmp/coyote-audio.log` (avoids TUI interference)
+- Use `RUST_LOG=debug cargo run` for verbose logging
 
 ## Architecture
 
@@ -30,6 +37,10 @@ PipeWire Audio -> AudioAnalyzer -> AudioMapper -> BLE -> Coyote Device
 - Single FFT pass per channel extracts all frequency data (dominant freq, bands, spectrum)
 - 2 FFTs per frame total (one per stereo channel)
 - 8192-point FFT with Hann window for ~5.9 Hz resolution at 48kHz
+
+**Audio buffer strategy:**
+- During each frame tick, all pending audio buffers are drained but only the most recent is analyzed
+- This prevents latency buildup when processing can't keep pace with audio input
 
 ## Project Structure
 
@@ -114,6 +125,17 @@ The BF command MUST be sent after every connect/reconnect to set soft limits. We
 - **Frequency range:** 10-100 from mapper, scaled to 10-240 for V3
 - **Mapping curves:** Linear, Exponential, Logarithmic, S-Curve
 - **Safety:** Soft ramp-up (100ms), instant decrease, Esc = emergency stop
+- **Frequency mapping inversion:** The audio-to-Coyote frequency mapping is intentionally inverted:
+  - High audio freq -> low Coyote freq (10) -> fast output (~100Hz pulses)
+  - Low audio freq -> high Coyote freq (100) -> slow output (~10Hz pulses)
+
+## Safety Behaviors
+
+- **Startup safety:** `max_intensity_a/b` are force-reset to 0 on every startup, regardless of config
+- **BLE command timing:** Commands sent every 80ms (not 100ms) to ensure arrival before device's 100ms timeout
+- **Stale device list:** If device list is >30 seconds old, triggers automatic 3-second rescan before connecting
+- **Emergency Stop (Esc):** Zeroes intensity AND clears command buffer
+- **Pause (p):** Sends zero-intensity commands but stays connected
 
 ## Config
 
@@ -134,9 +156,20 @@ Settings include:
 - **Terminal messed up:** Run `reset`
 - **V3 device not responding:** BF command may have failed - reconnect
 
+## Shutdown Sequence
+
+Specific order matters for clean exit:
+1. Restore terminal first (user sees shell even if cleanup hangs)
+2. Disconnect BLE with 2-second timeout
+3. Drop audio capture (signals PipeWire thread)
+4. Force exit to prevent hanging tasks
+
 ## Reference Documentation
 
-The `references/DG-LAB-OPENSOURCE/` directory contains the official protocol documentation:
+The `https://github.com/DG-LAB-OPENSOURCE/DG-LAB-OPENSOURCE` repo contains the official protocol documentation:
 - `coyote/v2/README_V2.md` - V2 protocol spec
 - `coyote/v3/README_V3.md` - V3 protocol spec
 - `coyote/v3/example.md` - V3 usage examples
+
+Clone it, don't read it directly from github.
+

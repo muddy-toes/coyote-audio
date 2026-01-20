@@ -288,6 +288,16 @@ impl Default for AudioMapper {
 }
 
 #[cfg(test)]
+impl AudioMapper {
+    /// Skip the ramp-up period for testing (simulates enough time has passed)
+    fn skip_ramp_for_test(&mut self) {
+        self.ramp_state.start_time = Some(Instant::now() - Duration::from_secs(10));
+        self.ramp_state.last_intensity_a = 2047;
+        self.ramp_state.last_intensity_b = 2047;
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::audio::{ChannelResult, FrequencyBands};
@@ -325,10 +335,7 @@ mod tests {
     #[test]
     fn test_max_intensity_cap() {
         let mut mapper = AudioMapper::new();
-        // Skip ramp by calling multiple times
-        mapper.ramp_state.start_time = Some(Instant::now() - Duration::from_secs(10));
-        mapper.ramp_state.last_intensity_a = 2047;
-        mapper.ramp_state.last_intensity_b = 2047;
+        mapper.skip_ramp_for_test();
 
         let analysis = make_analysis(1.0, 1.0);
         let mut config = Config::default();
@@ -345,10 +352,7 @@ mod tests {
     #[test]
     fn test_stereo_separation() {
         let mut mapper = AudioMapper::new();
-        // Skip ramp
-        mapper.ramp_state.start_time = Some(Instant::now() - Duration::from_secs(10));
-        mapper.ramp_state.last_intensity_a = 2047;
-        mapper.ramp_state.last_intensity_b = 2047;
+        mapper.skip_ramp_for_test();
 
         let analysis = make_analysis(0.8, 0.2);
         let config = Config::default();
@@ -471,10 +475,7 @@ mod tests {
     #[test]
     fn test_intensity_never_exceeds_max() {
         let mut mapper = AudioMapper::new();
-        // Skip ramp
-        mapper.ramp_state.start_time = Some(Instant::now() - Duration::from_secs(10));
-        mapper.ramp_state.last_intensity_a = 2047;
-        mapper.ramp_state.last_intensity_b = 2047;
+        mapper.skip_ramp_for_test();
 
         // Extreme inputs
         let analysis = make_analysis(2.0, 2.0);
@@ -492,10 +493,7 @@ mod tests {
     #[test]
     fn test_sensitivity_scaling() {
         let mut mapper = AudioMapper::new();
-        // Skip ramp
-        mapper.ramp_state.start_time = Some(Instant::now() - Duration::from_secs(10));
-        mapper.ramp_state.last_intensity_a = 2047;
-        mapper.ramp_state.last_intensity_b = 2047;
+        mapper.skip_ramp_for_test();
 
         let analysis = make_analysis(0.5, 0.5);
 
@@ -506,8 +504,7 @@ mod tests {
         config_high.sensitivity = 1.0;
 
         let cmd_low = mapper.map(&analysis, &config_low);
-        mapper.ramp_state.last_intensity_a = 2047;
-        mapper.ramp_state.last_intensity_b = 2047;
+        mapper.skip_ramp_for_test();
         let cmd_high = mapper.map(&analysis, &config_high);
 
         // Higher sensitivity should result in higher intensity
@@ -517,10 +514,7 @@ mod tests {
     #[test]
     fn test_per_channel_frequency_mapping() {
         let mut mapper = AudioMapper::new();
-        // Skip ramp
-        mapper.ramp_state.start_time = Some(Instant::now() - Duration::from_secs(10));
-        mapper.ramp_state.last_intensity_a = 2047;
-        mapper.ramp_state.last_intensity_b = 2047;
+        mapper.skip_ramp_for_test();
 
         // Create analysis with different frequencies for left and right
         let mut analysis = make_analysis(0.5, 0.5);
@@ -559,7 +553,7 @@ mod tests {
     #[test]
     fn test_frequency_fallback_to_default() {
         let mut mapper = AudioMapper::new();
-        mapper.ramp_state.start_time = Some(Instant::now() - Duration::from_secs(10));
+        mapper.skip_ramp_for_test();
 
         // Create analysis with no detected frequencies
         let analysis = make_analysis(0.5, 0.5);

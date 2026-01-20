@@ -7,7 +7,7 @@ use thiserror::Error;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use super::protocol::{CoyoteProtocol, Intensity, ProtocolV2, Waveform};
+use super::protocol::{CoyoteProtocol, ProtocolV2};
 
 // V2 Battery service and characteristic UUIDs
 const BATTERY_SERVICE: Uuid = Uuid::from_u128(0x955a180a_0fe2_f5aa_a094_84b8d4f3e8ad);
@@ -49,9 +49,6 @@ pub struct CoyoteConnection {
     protocol: Box<dyn CoyoteProtocol>,
     version: DeviceVersion,
     state: Arc<Mutex<ConnectionState>>,
-    current_intensity: Arc<Mutex<Intensity>>,
-    current_waveform_a: Arc<Mutex<Waveform>>,
-    current_waveform_b: Arc<Mutex<Waveform>>,
 }
 
 impl CoyoteConnection {
@@ -69,9 +66,6 @@ impl CoyoteConnection {
             protocol,
             version,
             state: Arc::new(Mutex::new(ConnectionState::Disconnected)),
-            current_intensity: Arc::new(Mutex::new(Intensity::default())),
-            current_waveform_a: Arc::new(Mutex::new(Waveform::default())),
-            current_waveform_b: Arc::new(Mutex::new(Waveform::default())),
         }
     }
 
@@ -424,89 +418,6 @@ impl CoyoteConnection {
                     .write(&chars[char_idx], &data, WriteType::WithoutResponse)
                     .await?;
             }
-        }
-
-        // Update cached state for keepalive
-        {
-            let mut current = self.current_intensity.lock().await;
-            *current = Intensity::new(intensity_a.min(2047), intensity_b.min(2047)).unwrap_or_default();
-        }
-
-        Ok(())
-    }
-
-    /// Set intensity only (V2 backwards compatibility - uses send_command internally)
-    pub async fn set_intensity(&mut self, intensity: Intensity) -> Result<(), ConnectionError> {
-        // Get current waveform to compute frequency
-        let waveform_a = {
-            let current = self.current_waveform_a.lock().await;
-            *current
-        };
-        let waveform_b = {
-            let current = self.current_waveform_b.lock().await;
-            *current
-        };
-
-        // Convert waveform back to frequency (x + y)
-        let freq_a = waveform_a.params.x as u16 + waveform_a.params.y;
-        let freq_b = waveform_b.params.x as u16 + waveform_b.params.y;
-
-        self.send_command(intensity.channel_a, intensity.channel_b, freq_a, freq_b)
-            .await?;
-
-        {
-            let mut current = self.current_intensity.lock().await;
-            *current = intensity;
-        }
-
-        Ok(())
-    }
-
-    /// Set waveform for channel A (V2 backwards compatibility - uses send_command internally)
-    pub async fn set_waveform_a(&mut self, waveform: Waveform) -> Result<(), ConnectionError> {
-        let intensity = {
-            let current = self.current_intensity.lock().await;
-            *current
-        };
-        let waveform_b = {
-            let current = self.current_waveform_b.lock().await;
-            *current
-        };
-
-        let freq_a = waveform.params.x as u16 + waveform.params.y;
-        let freq_b = waveform_b.params.x as u16 + waveform_b.params.y;
-
-        self.send_command(intensity.channel_a, intensity.channel_b, freq_a, freq_b)
-            .await?;
-
-        {
-            let mut current = self.current_waveform_a.lock().await;
-            *current = waveform;
-        }
-
-        Ok(())
-    }
-
-    /// Set waveform for channel B (V2 backwards compatibility - uses send_command internally)
-    pub async fn set_waveform_b(&mut self, waveform: Waveform) -> Result<(), ConnectionError> {
-        let intensity = {
-            let current = self.current_intensity.lock().await;
-            *current
-        };
-        let waveform_a = {
-            let current = self.current_waveform_a.lock().await;
-            *current
-        };
-
-        let freq_a = waveform_a.params.x as u16 + waveform_a.params.y;
-        let freq_b = waveform.params.x as u16 + waveform.params.y;
-
-        self.send_command(intensity.channel_a, intensity.channel_b, freq_a, freq_b)
-            .await?;
-
-        {
-            let mut current = self.current_waveform_b.lock().await;
-            *current = waveform;
         }
 
         Ok(())

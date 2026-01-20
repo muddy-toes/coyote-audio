@@ -304,7 +304,7 @@ async fn run_app(config: Config) -> Result<(), AppError> {
                     if let Some(ref cmd) = cmd_to_send {
                         if let Some(ref mut connection) = state.connection {
                             let send_start = std::time::Instant::now();
-                            match send_ble_command(connection, cmd, &app.config).await {
+                            match send_ble_command(connection, cmd).await {
                                 Ok(()) => {
                                     let elapsed = send_start.elapsed();
                                     if elapsed.as_millis() > 50 {
@@ -494,7 +494,6 @@ async fn run_app(config: Config) -> Result<(), AppError> {
 async fn send_ble_command(
     connection: &mut CoyoteConnection,
     command: &CoyoteCommand,
-    _config: &Config,
 ) -> Result<(), String> {
     // Check if still connected
     match connection.is_connected().await {
