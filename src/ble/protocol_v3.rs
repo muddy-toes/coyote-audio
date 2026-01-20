@@ -89,22 +89,24 @@ impl CoyoteProtocol for ProtocolV3 {
         cmd[3] = int_b;
 
         // Channel A: 4 frequency bytes, 4 waveform intensity bytes
+        // Use slight ramp-in {85, 95, 100, 100} for smoother transitions between windows
+        let waveform_intensities: [u8; 4] = [85, 95, 100, 100];
         for i in 0..4 {
             cmd[4 + i] = freq_a_mapped; // frequencies
-            cmd[8 + i] = 100; // waveform intensities (max)
+            cmd[8 + i] = waveform_intensities[i]; // waveform intensities
         }
 
         // Channel B: 4 frequency bytes, 4 waveform intensity bytes
         for i in 0..4 {
             cmd[12 + i] = freq_b_mapped; // frequencies
-            cmd[16 + i] = 100; // waveform intensities (max)
+            cmd[16 + i] = waveform_intensities[i]; // waveform intensities
         }
 
         vec![(0, cmd)] // Single write to characteristic 0
     }
 
     fn command_interval_ms(&self) -> u64 {
-        100
+        99 // Slightly under 100ms to ensure commands arrive before window expires
     }
 
     fn max_intensity(&self) -> u16 {
@@ -248,13 +250,14 @@ mod tests {
         let commands = proto.encode_command(100, 100, 50, 50);
         let data = &commands[0].1;
 
-        // Channel A waveform intensities (indices 8-11) should all be 100
-        for i in 8..12 {
-            assert_eq!(data[i], 100);
+        // Channel A waveform intensities (indices 8-11) use ramp pattern for smoother transitions
+        let expected_ramp: [u8; 4] = [85, 95, 100, 100];
+        for i in 0..4 {
+            assert_eq!(data[8 + i], expected_ramp[i]);
         }
-        // Channel B waveform intensities (indices 16-19) should all be 100
-        for i in 16..20 {
-            assert_eq!(data[i], 100);
+        // Channel B waveform intensities (indices 16-19) use same ramp pattern
+        for i in 0..4 {
+            assert_eq!(data[16 + i], expected_ramp[i]);
         }
     }
 

@@ -163,13 +163,14 @@ impl CoyoteConnection {
         // [0] = 0xBF (command header)
         // [1] = Channel A soft limit (0-200)
         // [2] = Channel B soft limit (0-200)
-        // [3] = Channel A frequency balance (0-255)
+        // [3] = Channel A frequency balance (0-255) - "higher = stronger low-freq impact"
         // [4] = Channel B frequency balance (0-255)
-        // [5] = Channel A intensity balance (0-255)
+        // [5] = Channel A intensity balance (0-255) - "adjusts pulse width"
         // [6] = Channel B intensity balance (0-255)
         //
-        // Set soft limits to 200 (max), balance params to 128 (neutral)
-        let bf_cmd = vec![0xBF, 200, 200, 128, 128, 128, 128];
+        // Set soft limits to 200 (max), balance params to 192 (higher for wider pulses,
+        // analogous to the Z=20 pulse width fix on V2)
+        let bf_cmd = vec![0xBF, 200, 200, 192, 192, 192, 192];
 
         peripheral
             .write(&chars[0], &bf_cmd, WriteType::WithoutResponse)
