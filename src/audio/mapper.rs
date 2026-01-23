@@ -5,7 +5,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::ble::protocol::{Intensity, Waveform, WaveformParams};
+use crate::ble::protocol::Intensity;
 use crate::config::Config;
 
 use super::AnalysisResult;
@@ -13,12 +13,6 @@ use super::AnalysisResult;
 /// Configuration for the audio-to-signal mapper
 #[derive(Debug, Clone)]
 pub struct MapperConfig {
-    /// Fixed X (pulse burst duration) value (0-31 ms)
-    pub x_value: u8,
-    /// Fixed Z (pulse width) value (0-31, units of 5us)
-    pub z_value: u8,
-    /// Minimum pulse width Z value (safety)
-    pub min_pulse_width: u8,
     /// Default frequency when audio frequency is outside configured band (Coyote freq 10-100)
     pub default_coyote_freq: u16,
     /// Soft ramp-up duration
@@ -28,9 +22,6 @@ pub struct MapperConfig {
 impl Default for MapperConfig {
     fn default() -> Self {
         Self {
-            x_value: 1,   // Single pulse per cycle (matches ESP32 AudioBase)
-            z_value: 20,  // Wide pulses (100µs) feel more continuous
-            min_pulse_width: 5,
             default_coyote_freq: 50, // Middle of range when no frequency detected
             ramp_duration: Duration::from_millis(100), // Brief startup ramp only
         }
@@ -41,16 +32,18 @@ impl Default for MapperConfig {
 #[derive(Debug, Clone)]
 pub struct CoyoteCommand {
     pub intensity: Intensity,
-    pub waveform_a: Waveform,
-    pub waveform_b: Waveform,
+    /// Coyote frequency for channel A (10-100, period in ms)
+    pub freq_a: u16,
+    /// Coyote frequency for channel B (10-100, period in ms)
+    pub freq_b: u16,
 }
 
 impl Default for CoyoteCommand {
     fn default() -> Self {
         Self {
             intensity: Intensity::default(),
-            waveform_a: Waveform::default(),
-            waveform_b: Waveform::default(),
+            freq_a: 50,
+            freq_b: 50,
         }
     }
 }
@@ -154,22 +147,18 @@ impl AudioMapper {
         let (ramped_a, ramped_b) = self.apply_ramp(capped_a, capped_b);
 
         // Calculate per-channel Coyote frequencies from each channel's dominant audio frequency
-        let coyote_freq_a = self.map_frequency(
+        let freq_a = self.map_frequency(
             analysis.left_frequency,
             app_config.freq_band_min,
             app_config.freq_band_max,
         );
-        let coyote_freq_b = self.map_frequency(
+        let freq_b = self.map_frequency(
             analysis.right_frequency,
             app_config.freq_band_min,
             app_config.freq_band_max,
         );
-        self.last_coyote_freq_a = coyote_freq_a;
-        self.last_coyote_freq_b = coyote_freq_b;
-
-        // Calculate waveform parameters for each channel
-        let waveform_a = self.calculate_waveform(coyote_freq_a);
-        let waveform_b = self.calculate_waveform(coyote_freq_b);
+        self.last_coyote_freq_a = freq_a;
+        self.last_coyote_freq_b = freq_b;
 
         // These should not fail since we clamp everything, but handle gracefully
         let intensity =
@@ -177,8 +166,8 @@ impl AudioMapper {
 
         CoyoteCommand {
             intensity,
-            waveform_a,
-            waveform_b,
+            freq_a,
+            freq_b,
         }
     }
 
@@ -255,29 +244,6 @@ impl AudioMapper {
         self.ramp_state.last_intensity_b = ramped_b;
 
         (ramped_a, ramped_b)
-    }
-
-    /// Calculate waveform parameters from Coyote frequency
-    ///
-    /// Coyote frequency = X + Y, where X is pulse burst duration and Y is interval.
-    /// We use a fixed X and calculate Y = freq - X.
-    fn calculate_waveform(&self, coyote_freq: u16) -> Waveform {
-        let x = self.config.x_value.min(WaveformParams::X_MAX);
-
-        // Y = freq - X, clamped to valid range
-        let y_val = (coyote_freq as i32 - x as i32).max(0);
-        let y = (y_val as u16).min(WaveformParams::Y_MAX);
-
-        // Z is fixed, but respect minimum pulse width safety
-        let z = self
-            .config
-            .z_value
-            .max(self.config.min_pulse_width)
-            .min(WaveformParams::Z_MAX);
-
-        // Create the waveform (this should not fail with our clamping)
-        let params = WaveformParams::new(x, y, z).unwrap_or_default();
-        Waveform::new(params)
     }
 }
 
@@ -364,59 +330,20 @@ mod tests {
     }
 
     #[test]
-    fn test_x_value_fixed() {
-        let config = MapperConfig {
-            x_value: 15,
-            ..Default::default()
-        };
-        let mapper = AudioMapper::with_config(config);
-        let waveform = mapper.calculate_waveform(200);
+    fn test_frequency_output_range() {
+        let mut mapper = AudioMapper::new();
+        mapper.skip_ramp_for_test();
 
-        assert_eq!(waveform.params.x, 15);
-    }
+        // Test that frequencies are in valid range (10-100)
+        let mut analysis = make_analysis(0.5, 0.5);
+        analysis.left_frequency = Some(500.0);
+        analysis.right_frequency = Some(1000.0);
+        let config = Config::default();
 
-    #[test]
-    fn test_z_value_fixed() {
-        let config = MapperConfig {
-            z_value: 20,
-            min_pulse_width: 5,
-            ..Default::default()
-        };
-        let mapper = AudioMapper::with_config(config);
-        let waveform = mapper.calculate_waveform(200);
+        let cmd = mapper.map(&analysis, &config);
 
-        assert_eq!(waveform.params.z, 20);
-    }
-
-    #[test]
-    fn test_min_pulse_width_safety() {
-        let config = MapperConfig {
-            z_value: 2,
-            min_pulse_width: 5,
-            ..Default::default()
-        };
-        let mapper = AudioMapper::with_config(config);
-        let waveform = mapper.calculate_waveform(200);
-
-        // Should be clamped to minimum
-        assert_eq!(waveform.params.z, 5);
-    }
-
-    #[test]
-    fn test_y_from_frequency() {
-        let config = MapperConfig {
-            x_value: 10,
-            ..Default::default()
-        };
-        let mapper = AudioMapper::with_config(config);
-
-        // Y = coyote_freq - X = 200 - 10 = 190
-        let waveform = mapper.calculate_waveform(200);
-        assert_eq!(waveform.params.y, 190);
-
-        // Y = coyote_freq - X = 100 - 10 = 90
-        let waveform2 = mapper.calculate_waveform(100);
-        assert_eq!(waveform2.params.y, 90);
+        assert!(cmd.freq_a >= 10 && cmd.freq_a <= 100);
+        assert!(cmd.freq_b >= 10 && cmd.freq_b <= 100);
     }
 
     #[test]
@@ -452,13 +379,9 @@ mod tests {
     }
 
     #[test]
-    fn test_waveform_params_in_range() {
-        let mut mapper = AudioMapper::with_config(MapperConfig {
-            x_value: 31,
-            z_value: 31,
-            min_pulse_width: 0,
-            ..Default::default()
-        });
+    fn test_frequency_in_range_with_extreme_inputs() {
+        let mut mapper = AudioMapper::new();
+        mapper.skip_ramp_for_test();
 
         // Test with extreme analysis values
         let analysis = make_analysis(1.5, 1.5);
@@ -466,10 +389,9 @@ mod tests {
 
         let cmd = mapper.map(&analysis, &config);
 
-        // All waveform params should be within valid ranges
-        assert!(cmd.waveform_a.params.x <= WaveformParams::X_MAX);
-        assert!(cmd.waveform_a.params.y <= WaveformParams::Y_MAX);
-        assert!(cmd.waveform_a.params.z <= WaveformParams::Z_MAX);
+        // Frequencies should be in valid range (10-100)
+        assert!(cmd.freq_a >= 10 && cmd.freq_a <= 100);
+        assert!(cmd.freq_b >= 10 && cmd.freq_b <= 100);
     }
 
     #[test]
@@ -527,26 +449,15 @@ mod tests {
 
         let cmd = mapper.map(&analysis, &config);
 
-        // Verify the mapper tracks different frequencies for each channel
-        let freq_a = mapper.last_coyote_freq_a();
-        let freq_b = mapper.last_coyote_freq_b();
-
         // Mapping is INVERTED: high audio freq → low coyote_freq → fast output
         // 300 Hz (low audio) → high coyote_freq → slow output
         // 1500 Hz (high audio) → low coyote_freq → fast output
 
         // Channel A (left, low audio 300Hz) should have HIGHER Coyote freq than Channel B (right, high audio 1500Hz)
         assert!(
-            freq_a > freq_b,
+            cmd.freq_a > cmd.freq_b,
             "Left freq 300 Hz should map to HIGHER Coyote freq (slower output) than right 1500 Hz, but got A={} B={}",
-            freq_a, freq_b
-        );
-
-        // Verify waveforms are different - higher coyote_freq means higher Y
-        assert!(
-            cmd.waveform_a.params.y > cmd.waveform_b.params.y,
-            "Waveform A Y should be greater than B (slower output), got A.y={} B.y={}",
-            cmd.waveform_a.params.y, cmd.waveform_b.params.y
+            cmd.freq_a, cmd.freq_b
         );
     }
 

@@ -502,22 +502,16 @@ async fn send_ble_command(
         Err(e) => return Err(format!("Connection check failed: {}", e)),
     }
 
-    // Fixed waveform params: X=1 (single pulse), Z=20 (100us pulse width)
-    connection.set_waveform_params(1, 20);
+    // Set Z (pulse width) - X is now calculated dynamically by protocol from frequency
+    connection.set_z_value(20);
 
-    // Use per-channel Y from the mapper (audio frequency controls output frequency)
-    // freq = X + Y, where Y is calculated from audio frequency
-    // Left audio freq -> Channel A, Right audio freq -> Channel B
-    let freq_a = 1 + command.waveform_a.params.y;  // X=1
-    let freq_b = 1 + command.waveform_b.params.y;  // X=1
-
-    // Send command with per-channel frequencies
+    // Send command with per-channel frequencies (mapper outputs Coyote freq directly)
     connection
         .send_command(
             command.intensity.channel_a,
             command.intensity.channel_b,
-            freq_a,
-            freq_b,
+            command.freq_a,
+            command.freq_b,
         )
         .await
         .map_err(|e| e.to_string())?;

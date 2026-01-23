@@ -162,9 +162,9 @@ impl CoyoteConnection {
         // [5] = Channel A intensity balance (0-255) - "adjusts pulse width"
         // [6] = Channel B intensity balance (0-255)
         //
-        // Set soft limits to 200 (max), balance params to 192 (higher for wider pulses,
-        // analogous to the Z=20 pulse width fix on V2)
-        let bf_cmd = vec![0xBF, 200, 200, 192, 192, 192, 192];
+        // Set soft limits to 200 (max), balance params match XToys values
+        // XToys uses 160 for freq balance, 0 for intensity balance
+        let bf_cmd = vec![0xBF, 200, 200, 160, 160, 0, 0];
 
         peripheral
             .write(&chars[0], &bf_cmd, WriteType::WithoutResponse)
@@ -388,9 +388,9 @@ impl CoyoteConnection {
         Ok(chars)
     }
 
-    /// Set waveform parameters (X and Z values) on the protocol
-    pub fn set_waveform_params(&mut self, x: u8, z: u8) {
-        self.protocol.set_x_value(x);
+    /// Set Z value (pulse width) on the protocol
+    /// X is now calculated dynamically based on frequency
+    pub fn set_z_value(&mut self, z: u8) {
         self.protocol.set_z_value(z);
     }
 

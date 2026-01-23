@@ -33,12 +33,6 @@ pub struct Config {
     pub last_device_address: Option<String>,
     #[serde(default)]
     pub show_spectrum_analyzer: bool,
-    /// Waveform X value: consecutive pulses (1-31)
-    #[serde(default = "default_x_value")]
-    pub x_value: u8,
-    /// Waveform Y value: gap in ms after X pulses (0-1023)
-    #[serde(default = "default_y_value")]
-    pub y_value: u16,
     /// Waveform Z value: pulse width in 5us units (0-31)
     #[serde(default = "default_z_value")]
     pub z_value: u8,
@@ -60,14 +54,6 @@ fn default_freq_band_max() -> f32 {
     800.0
 }
 
-fn default_x_value() -> u8 {
-    1 // Single pulse per cycle
-}
-
-fn default_y_value() -> u16 {
-    0 // No gap = 1000Hz output with X=1
-}
-
 fn default_z_value() -> u8 {
     20 // 100us pulse width
 }
@@ -82,8 +68,6 @@ impl Default for Config {
             freq_band_max: default_freq_band_max(),
             last_device_address: None,
             show_spectrum_analyzer: false,
-            x_value: default_x_value(),
-            y_value: default_y_value(),
             z_value: default_z_value(),
         }
     }
@@ -146,14 +130,6 @@ impl Config {
         self.freq_band_max = value.clamp(self.freq_band_min + 10.0, 2000.0);
     }
 
-    pub fn set_x_value(&mut self, value: u8) {
-        self.x_value = value.clamp(1, 31);
-    }
-
-    pub fn set_y_value(&mut self, value: u16) {
-        self.y_value = value.min(1023);
-    }
-
     pub fn set_z_value(&mut self, value: u8) {
         self.z_value = value.clamp(1, 31);
     }
@@ -184,8 +160,6 @@ mod tests {
             freq_band_max: 600.0,
             last_device_address: Some("AA:BB:CC:DD:EE:FF".to_string()),
             show_spectrum_analyzer: true,
-            x_value: 5,
-            y_value: 10,
             z_value: 15,
         };
 
@@ -202,8 +176,6 @@ mod tests {
             Some("AA:BB:CC:DD:EE:FF".to_string())
         );
         assert_eq!(parsed.show_spectrum_analyzer, true);
-        assert_eq!(parsed.x_value, 5);
-        assert_eq!(parsed.y_value, 10);
         assert_eq!(parsed.z_value, 15);
     }
 

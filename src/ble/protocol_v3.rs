@@ -26,15 +26,23 @@ impl ProtocolV3 {
         ((v2_intensity as u32 * 200) / 2047).min(200) as u8
     }
 
-    /// Map frequency from V2 range (10-100) to V3 range (10-240)
-    /// This allows the mapper to work with the same 10-100 range for both protocols,
-    /// while V3 devices get access to their full frequency range.
+    /// Map frequency from V2 range (10-100) to V3 byte encoding
+    /// Uses XToys's non-linear period-based mapping which matches V3 hardware encoding.
+    /// v2_freq is the period in ms (10 = fast 100Hz, 100 = slow 10Hz)
     fn map_frequency(v2_freq: u16) -> u8 {
-        // Linear mapping: 10-100 -> 10-240
-        let clamped = v2_freq.clamp(10, 100) as f32;
-        let normalized = (clamped - 10.0) / 90.0; // 0.0 to 1.0
-        let v3_freq = 10.0 + normalized * 230.0; // 10 to 240
-        (v3_freq as u8).clamp(10, 240)
+        let period = v2_freq.clamp(10, 100) as f32;
+
+        // V3 encoding: direct for 0-100ms, compressed for higher periods
+        // Our range is 10-100ms so we use direct mapping
+        // But if we ever extend beyond 100ms, this handles it correctly:
+        if period > 100.0 && period <= 600.0 {
+            ((period - 100.0) / 5.0 + 100.0).round() as u8
+        } else if period > 600.0 && period <= 1000.0 {
+            ((period - 600.0) / 10.0 + 200.0).round() as u8
+        } else {
+            // Direct mapping for 10-100ms range
+            period.round() as u8
+        }
     }
 
     fn next_sequence(&mut self) -> u8 {
@@ -167,28 +175,26 @@ mod tests {
 
     #[test]
     fn test_map_frequency_max() {
-        // 100 in V2 range maps to 240 in V3 range
-        assert_eq!(ProtocolV3::map_frequency(100), 240);
+        // 100 in V2 range maps directly to 100 in V3 (within direct 0-100ms range)
+        assert_eq!(ProtocolV3::map_frequency(100), 100);
     }
 
     #[test]
     fn test_map_frequency_mid() {
-        // 55 is midpoint of V2 range (10-100)
-        // Should map to midpoint of V3 range (10-240) = 125
-        let result = ProtocolV3::map_frequency(55);
-        assert!(result >= 124 && result <= 126, "Expected ~125, got {}", result);
+        // 55 period in ms maps directly to 55 (within direct 0-100ms range)
+        assert_eq!(ProtocolV3::map_frequency(55), 55);
     }
 
     #[test]
     fn test_map_frequency_clamps_low() {
-        // Values below 10 should clamp to 10 (V3 min)
+        // Values below 10 should clamp to 10
         assert_eq!(ProtocolV3::map_frequency(0), 10);
     }
 
     #[test]
     fn test_map_frequency_clamps_high() {
-        // Values above 100 should clamp to 100, then map to 240
-        assert_eq!(ProtocolV3::map_frequency(200), 240);
+        // Values above 100 clamp to 100, then map directly to 100
+        assert_eq!(ProtocolV3::map_frequency(200), 100);
     }
 
     #[test]
@@ -230,17 +236,17 @@ mod tests {
     #[test]
     fn test_encode_command_frequencies() {
         let mut proto = ProtocolV3::default();
-        // Input: V2 frequencies 10 and 100
+        // Input: V2 frequencies 10 and 100 (periods in ms)
         let commands = proto.encode_command(100, 100, 10, 100);
         let data = &commands[0].1;
 
-        // Channel A: V2 freq 10 maps to V3 freq 10
+        // Channel A: period 10ms maps directly to 10
         for i in 4..8 {
             assert_eq!(data[i], 10);
         }
-        // Channel B: V2 freq 100 maps to V3 freq 240
+        // Channel B: period 100ms maps directly to 100 (within direct range)
         for i in 12..16 {
-            assert_eq!(data[i], 240);
+            assert_eq!(data[i], 100);
         }
     }
 

@@ -32,10 +32,8 @@ pub trait CoyoteProtocol: Send + Sync {
     /// Maximum frequency value for this protocol
     fn max_frequency(&self) -> u16;
 
-    /// Set the X value (pulses per cycle) for waveform generation
-    fn set_x_value(&mut self, _x: u8) {}
-
     /// Set the Z value (pulse width) for waveform generation
+    /// X is now calculated dynamically based on frequency
     fn set_z_value(&mut self, _z: u8) {}
 }
 
@@ -175,15 +173,13 @@ impl Waveform {
 
 /// Protocol implementation for Coyote V2 devices
 pub struct ProtocolV2 {
-    x_value: u8,
     z_value: u8,
 }
 
 impl Default for ProtocolV2 {
     fn default() -> Self {
         Self {
-            x_value: 1,   // Single pulse per cycle (matches ESP32 AudioBase)
-            z_value: 20,  // Wide pulses (100µs) feel more continuous
+            z_value: 20, // Wide pulses (100µs) feel more continuous
         }
     }
 }
@@ -236,10 +232,6 @@ impl CoyoteProtocol for ProtocolV2 {
         100 // We use 10-100 range
     }
 
-    fn set_x_value(&mut self, x: u8) {
-        self.x_value = x.clamp(1, 31);
-    }
-
     fn set_z_value(&mut self, z: u8) {
         self.z_value = z.clamp(1, 31);
     }
@@ -247,9 +239,13 @@ impl CoyoteProtocol for ProtocolV2 {
 
 impl ProtocolV2 {
     fn calculate_waveform(&self, coyote_freq: u16) -> Waveform {
-        let x = self.x_value.min(31);
-        let y_val = (coyote_freq as i32 - x as i32).max(0);
-        let y = (y_val as u16).min(1023);
+        // XToys formula: x = 15 * sqrt(period/1000), y = period - x
+        // coyote_freq is the period in ms (10-100 range = 100Hz to 10Hz output)
+        // This keeps pulse width perceptually consistent across frequencies
+        let period = coyote_freq as f32;
+        let x = (15.0 * (period / 1000.0).sqrt()).round() as u8;
+        let x = x.clamp(1, 31);
+        let y = ((period - x as f32).max(0.0).round() as u16).min(1023);
         let z = self.z_value.clamp(5, 31);
         let params = WaveformParams::new(x, y, z).unwrap_or_default();
         Waveform::new(params)
