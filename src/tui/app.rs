@@ -509,6 +509,10 @@ impl App {
                 self.status_message = Some("Disconnected".to_string());
                 self.battery_level = None;
                 self.connected_device_version = None;
+                // Safety: reset intensity to zero on disconnect to prevent
+                // accidental high intensity on reconnect
+                self.config.set_max_intensity_a(0);
+                self.config.set_max_intensity_b(0);
             }
             ConnectionState::Connecting => {
                 self.status_message = Some("Connecting...".to_string());

@@ -335,6 +335,8 @@ async fn run_app(config: Config) -> Result<(), AppError> {
                                 app.update_connection_state(coyote_audio::ble::connection::ConnectionState::Connected);
                                 state.connection = Some(conn);
                                 state.reconnect_requested = false;
+                                // Safety: restart soft ramp on reconnect
+                                mapper.reset_ramp();
                             }
                             Err(e) => {
                                 log::error!("Reconnection failed: {}", e);

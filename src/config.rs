@@ -47,11 +47,11 @@ fn default_sensitivity() -> f32 {
 }
 
 fn default_freq_band_min() -> f32 {
-    200.0
+    300.0
 }
 
 fn default_freq_band_max() -> f32 {
-    800.0
+    700.0
 }
 
 fn default_z_value() -> u8 {
@@ -145,8 +145,8 @@ mod tests {
         assert_eq!(config.max_intensity_a, 1024);
         assert_eq!(config.max_intensity_b, 1024);
         assert_eq!(config.sensitivity, 1.0);
-        assert_eq!(config.freq_band_min, 200.0);
-        assert_eq!(config.freq_band_max, 800.0);
+        assert_eq!(config.freq_band_min, 300.0);
+        assert_eq!(config.freq_band_max, 700.0);
         assert!(config.last_device_address.is_none());
     }
 

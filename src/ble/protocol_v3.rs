@@ -92,7 +92,7 @@ impl CoyoteProtocol for ProtocolV3 {
         // Waveform intensity at 100 (max) for all segments
         let mut cmd = vec![0u8; 20];
         cmd[0] = 0xB0;
-        cmd[1] = (seq << 4) | 0b0011; // sequence + absolute mode for both channels
+        cmd[1] = (seq << 4) | 0b1111; // sequence + absolute intensity mode (2 bits per channel: 0b11=absolute)
         cmd[2] = int_a;
         cmd[3] = int_b;
 
@@ -220,7 +220,7 @@ mod tests {
         // Check header
         assert_eq!(data[0], 0xB0);
         // First call, sequence = 0, mode = 0b11
-        assert_eq!(data[1], 0b0000_0011);
+        assert_eq!(data[1], 0b0000_1111);
     }
 
     #[test]
