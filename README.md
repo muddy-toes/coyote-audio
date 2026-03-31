@@ -211,7 +211,20 @@ While increases are ramped, intensity can decrease instantly when audio gets qui
 **No devices found**
 - Ensure Coyote is powered on and not connected to another device
 - Try `bluetoothctl scan on` to verify your adapter sees it
-- Device advertises as "D-LAB ESTIM01" or similar
+- V2 device advertises as "D-LAB ESTIM01"
+- V3 device advertises as "47L121000"
+
+**Coyote V3 not showing up after firmware update (firmware v10+)**
+
+DG-LAB firmware v10+ adds BLE bonding/pairing to the Coyote 3.0. After updating, the device will not appear in BLE scans until you put it into pairing mode:
+
+1. Pull down (not press) the wheels on BOTH sides of the device simultaneously
+2. Hold until the shoulder lights flash alternately in yellow and blue
+3. Release - the device is now in pairing mode and will be scannable
+
+Once your system has bonded with the device, subsequent connections should work without repeating this step. If you switch computers or clear your Bluetooth pairings, you will need to enter pairing mode again.
+
+This only affects Coyote V3 devices. V2 devices are not affected.
 
 **Connection drops frequently**
 - Move closer to reduce interference
