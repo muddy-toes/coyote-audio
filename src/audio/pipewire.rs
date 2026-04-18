@@ -6,17 +6,18 @@
 use std::convert::TryInto;
 use std::io::Cursor;
 use std::mem;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 use std::thread;
 
 use pipewire as pw;
-use pw::main_loop::MainLoop;
+use pipewire::main_loop::MainLoopBox;
+use pipewire::stream::StreamBox;
 use pw::properties::properties;
 use pw::spa;
 use pw::spa::param::audio::{AudioFormat, AudioInfoRaw};
 use pw::spa::pod::serialize::PodSerializer;
 use pw::spa::pod::{Pod, Value};
-use pw::stream::{Stream, StreamFlags};
+use pw::stream::{StreamFlags};
 
 use thiserror::Error;
 
@@ -117,9 +118,9 @@ fn run_pipewire_loop(
 ) -> Result<(), AudioCaptureError> {
     pw::init();
 
-    let main_loop = MainLoop::new(None).map_err(|e| {
+    let main_loop = Arc::new(MainLoopBox::new(None).map_err(|e| {
         AudioCaptureError::InitError(format!("Failed to create main loop: {}", e))
-    })?;
+    })?);
 
     // Set up a timer to periodically check for stop signal
     // The timer must be kept alive (not dropped) for it to fire
@@ -137,7 +138,7 @@ fn run_pipewire_loop(
         Some(std::time::Duration::from_millis(100)),
     );
 
-    let context = pw::context::Context::new(&main_loop).map_err(|e| {
+    let context = pw::context::ContextBox::new(&main_loop.loop_(), None).map_err(|e| {
         AudioCaptureError::InitError(format!("Failed to create context: {}", e))
     })?;
 
@@ -147,7 +148,7 @@ fn run_pipewire_loop(
 
     // Create stream with properties that make it appear as a virtual sink
     // that monitors audio (captures while passing through to default output)
-    let stream = Stream::new(
+    let stream = StreamBox::new(
         &core,
         &config.sink_name,
         properties! {
